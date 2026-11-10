@@ -1,0 +1,24 @@
+[package]
+name = "dapple"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Cast local video files to the TVs and screens on your network (Chromecast, DLNA/UPnP)"
+license = "MIT"
+repository = "https://github.com/AlexArtaud-Dev/dapple"
+keywords = ["cast", "chromecast", "dlna", "upnp", "video"]
+categories = ["command-line-utilities", "multimedia::video"]
+
+[dependencies]
+ctrlc = "3"
+lexopt = "0.3"
+roxmltree = "0.20"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
