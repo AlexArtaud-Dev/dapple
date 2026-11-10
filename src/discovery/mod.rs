@@ -110,7 +110,7 @@ pub fn discover(wait: Duration) -> Vec<Device> {
             devices.push(device);
         }
     }
-    devices.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    devices.sort_by_key(|device| device.name.to_lowercase());
     devices
 }
 
