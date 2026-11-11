@@ -156,7 +156,7 @@ impl Cast {
     }
 }
 
-pub fn cast(options: CastOptions) -> Result<()> {
+pub fn cast(options: CastOptions, relay: Option<&str>) -> Result<()> {
     let file = options
         .file
         .canonicalize()
@@ -167,7 +167,7 @@ pub fn cast(options: CastOptions) -> Result<()> {
         Some(path) => subtitles::load(path)?,
         None => Subtitles::default(),
     };
-    let device = discovery::resolve(&options.to, Duration::from_secs_f64(options.timeout))?;
+    let device = discovery::resolve(&options.to, Duration::from_secs_f64(options.timeout), relay)?;
     let target = match device.endpoint {
         Endpoint::Chromecast { .. } => Target::Chromecast,
         Endpoint::Dlna { .. } => Target::Dlna,

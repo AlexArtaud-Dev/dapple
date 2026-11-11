@@ -190,7 +190,7 @@ pub fn start_of(query: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn read_head(stream: &mut TcpStream) -> io::Result<String> {
+pub(crate) fn read_head(stream: &mut TcpStream) -> io::Result<String> {
     let mut head = Vec::new();
     let mut byte = [0u8; 1024];
     while !head.windows(4).any(|window| window == b"\r\n\r\n") {

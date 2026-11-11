@@ -11,6 +11,7 @@ use crate::error::Result;
 use crate::fail;
 use crate::http::Url;
 use crate::network;
+use crate::relay;
 
 const CAST_SCHEME: &str = "chromecast://";
 const CAST_PORT: u16 = 8009;
@@ -45,6 +46,48 @@ impl Device {
             Endpoint::Dlna { .. } => "dlna",
             Endpoint::Chromecast { .. } => "chromecast",
         }
+    }
+
+    /// The device as listings and relays publish it.
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "name": self.name,
+            "type": self.kind(),
+            "model": self.model,
+            "id": self.id,
+            "address": self.ip.to_string(),
+            "locator": self.locator,
+        });
+        if let Endpoint::Dlna { av, rendering } = &self.endpoint {
+            value["av"] = serde_json::json!(av);
+            value["rendering"] = serde_json::json!(rendering);
+        }
+        value
+    }
+
+    /// Reads a device published by [`Device::to_json`]; `None` when something is missing.
+    pub fn from_json(value: &serde_json::Value) -> Option<Device> {
+        let text = |key: &str| value[key].as_str().map(str::to_string);
+        let ip: IpAddr = value["address"].as_str()?.parse().ok()?;
+        let locator = text("locator")?;
+        let endpoint = match value["type"].as_str()? {
+            "chromecast" => Endpoint::Chromecast {
+                address: locator.strip_prefix(CAST_SCHEME)?.parse().ok()?,
+            },
+            "dlna" => Endpoint::Dlna {
+                av: text("av")?,
+                rendering: text("rendering"),
+            },
+            _ => return None,
+        };
+        Some(Device {
+            name: text("name")?,
+            model: text("model").unwrap_or_default(),
+            id: text("id").unwrap_or_default(),
+            locator,
+            ip,
+            endpoint,
+        })
     }
 
     fn cast(device: mdns::CastDevice) -> Device {
@@ -187,12 +230,31 @@ pub fn pick<'a>(devices: &'a [Device], query: &str) -> Result<&'a Device> {
     }
 }
 
+/// The screens this program can learn of: those it sees itself, else those a relay sees.
+///
+/// A relay given with `--relay` is asked directly. Without one, a program running in a container
+/// that sees nothing tries a relay on its gateway, which is the machine hosting it: containers
+/// on a bridge network receive no multicast, so this is how they find screens.
+pub fn find(wait: Duration, relay_address: Option<&str>) -> Result<Vec<Device>> {
+    if let Some(address) = relay_address {
+        return relay::ask(address, wait);
+    }
+    let devices = discover(wait);
+    if !devices.is_empty() || !network::in_container() {
+        return Ok(devices);
+    }
+    let Some(gateway) = network::default_gateway() else {
+        return Ok(devices);
+    };
+    Ok(relay::ask(&gateway.to_string(), wait).unwrap_or(devices))
+}
+
 /// Finds the device named by `--to`.
-pub fn resolve(query: &str, wait: Duration) -> Result<Device> {
+pub fn resolve(query: &str, wait: Duration, relay_address: Option<&str>) -> Result<Device> {
     if let Some(device) = from_locator(query) {
         return device;
     }
-    let devices = discover(wait);
+    let devices = find(wait, relay_address)?;
     pick(&devices, query).cloned()
 }
 
@@ -267,6 +329,49 @@ mod tests {
             .unwrap();
         assert_eq!(device.ip.to_string(), "192.168.1.50");
         assert_eq!(device.kind(), "chromecast");
+    }
+
+    #[test]
+    fn devices_have_a_json_form() {
+        let tv = Device {
+            name: "TV".into(),
+            model: "M".into(),
+            id: "1".into(),
+            locator: "http://192.168.1.9/d.xml".into(),
+            ip: "192.168.1.9".parse().unwrap(),
+            endpoint: Endpoint::Dlna {
+                av: "http://192.168.1.9/av".into(),
+                rendering: Some("http://192.168.1.9/rc".into()),
+            },
+        };
+        assert_eq!(Device::from_json(&tv.to_json()), Some(tv.clone()));
+        let silent = Device {
+            endpoint: Endpoint::Dlna {
+                av: "http://192.168.1.9/av".into(),
+                rendering: None,
+            },
+            ..tv
+        };
+        assert_eq!(Device::from_json(&silent.to_json()), Some(silent.clone()));
+        let cast = device("Cast", "192.168.1.42", true);
+        let cast = Device {
+            locator: "chromecast://192.168.1.42:8009".into(),
+            ..cast
+        };
+        assert_eq!(Device::from_json(&cast.to_json()), Some(cast.clone()));
+
+        let mut broken = cast.to_json();
+        broken["type"] = "airplay".into();
+        assert_eq!(Device::from_json(&broken), None);
+        let mut broken = cast.to_json();
+        broken["locator"] = "nowhere".into();
+        assert_eq!(Device::from_json(&broken), None);
+        let mut broken = silent.to_json();
+        broken["av"] = serde_json::Value::Null;
+        assert_eq!(Device::from_json(&broken), None);
+        let mut broken = silent.to_json();
+        broken["address"] = "tv.local".into();
+        assert_eq!(Device::from_json(&broken), None);
     }
 
     #[test]

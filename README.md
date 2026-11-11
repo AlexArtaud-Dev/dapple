@@ -44,11 +44,12 @@ with them dapple converts on the fly what a device cannot play.
 ## Use
 
 ```text
-dapple devices [--timeout <seconds>] [--json]
+dapple devices [--timeout <seconds>] [--json | --choices]
 dapple cast <file> --to <device> [options]
 dapple status|pause|resume|stop --to <device>
 dapple seek <time> --to <device>
 dapple volume <0-100> --to <device>
+dapple relay [--listen <address:port>] [--timeout <seconds>]
 ```
 
 `<device>` is a name (or part of it), an id or an address shown by `dapple devices`. It can
@@ -96,6 +97,37 @@ the conversion at the new position.
 - External programs (`ffmpeg`, `ffprobe`) are started with an argument list, never through a
   shell.
 
+## Where multicast does not pass: the relay
+
+Finding screens relies on multicast, which a container on a bridge network never receives.
+Rather than opening the whole host network to the program that casts, run a **relay** that
+only lists screens:
+
+```console
+$ dapple relay --listen 172.31.250.1:8691
+dapple relay listening on http://172.31.250.1:8691/devices
+```
+
+It answers `GET /devices` and nothing else: it plays nothing and reads no file. Other commands
+ask it with `--relay <address>`; a dapple running in a container that sees no screen looks for a
+relay on its gateway (the machine hosting it) by itself.
+
+The image `ghcr.io/alexartaud-dev/dapple` (the binary alone, on `scratch`) runs the relay by
+default:
+
+```yaml
+services:
+  dapple-relay:
+    image: ghcr.io/alexartaud-dev/dapple:latest
+    command: [relay, --listen, '172.31.250.1:8691']
+    network_mode: host # the only thing that needs it: multicast
+    user: 65532:65532
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+```
+
 ## Using it from other programs
 
 Everything is scriptable: `dapple devices --json` lists screens with their locators,
@@ -139,7 +171,6 @@ Casting needs network paths that Canopy's default compose file closes on purpose
 
 ## Roadmap
 
-- `dapple serve`: a small local HTTP API to list screens and drive casts, for integrations
 - Roku and Fire TV, then AirPlay
 - Embedded subtitles and audio track listing
 - VAAPI and Quick Sync encoders

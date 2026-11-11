@@ -8,6 +8,7 @@ mod error;
 mod http;
 mod media;
 mod network;
+mod relay;
 mod renderer;
 mod server;
 mod session;
@@ -16,47 +17,53 @@ mod timecode;
 
 use std::time::Duration;
 
-use serde_json::json;
-
-use cli::{Action, Command};
+use cli::{Action, Command, Format, Parsed};
 use discovery::Device;
 use error::Result;
 
 fn main() {
-    let command = match cli::parse(std::env::args_os().skip(1)) {
-        Ok(command) => command,
+    let parsed = match cli::parse(std::env::args_os().skip(1)) {
+        Ok(parsed) => parsed,
         Err(error) => {
             eprintln!("dapple: {error}\nTry 'dapple --help'.");
             std::process::exit(2);
         }
     };
-    if let Err(error) = run(command) {
+    if let Err(error) = run(parsed) {
         eprintln!("dapple: {error}");
         std::process::exit(1);
     }
 }
 
-fn run(command: Command) -> Result<()> {
+fn run(Parsed { command, relay }: Parsed) -> Result<()> {
+    let relay = relay.as_deref();
     match command {
         Command::Help => println!("{}", cli::HELP),
         Command::Version => println!("dapple {}", env!("CARGO_PKG_VERSION")),
-        Command::Devices { timeout, json } => {
-            let devices = discovery::discover(Duration::from_secs_f64(timeout));
-            if json {
-                println!("{}", devices_json(&devices));
-            } else if devices.is_empty() {
-                println!("No screen found. Is this machine on the same network as the TV?");
-            } else {
-                print!("{}", devices_table(&devices));
+        Command::Devices { timeout, format } => {
+            let devices = discovery::find(Duration::from_secs_f64(timeout), relay)?;
+            match format {
+                Format::Json => println!("{}", relay::to_json(&devices)),
+                Format::Choices => print!("{}", devices_choices(&devices)),
+                Format::Table if devices.is_empty() => {
+                    println!("No screen found. Is this machine on the same network as the TV?")
+                }
+                Format::Table => print!("{}", devices_table(&devices)),
             }
         }
-        Command::Cast(options) => session::cast(*options)?,
+        Command::Relay { listen, timeout } => {
+            let listen = listen
+                .parse()
+                .map_err(|_| fail!("invalid --listen \"{listen}\" (use address:port)"))?;
+            relay::serve(listen, Duration::from_secs_f64(timeout))?;
+        }
+        Command::Cast(options) => session::cast(*options, relay)?,
         Command::Control {
             to,
             action,
             timeout,
         } => {
-            let device = discovery::resolve(&to, Duration::from_secs_f64(timeout))?;
+            let device = discovery::resolve(&to, Duration::from_secs_f64(timeout), relay)?;
             let mut renderer = renderer::connect(&device)?;
             match action {
                 Action::Pause => renderer.pause()?,
@@ -82,21 +89,21 @@ fn run(command: Command) -> Result<()> {
     Ok(())
 }
 
-fn devices_json(devices: &[Device]) -> String {
-    let list: Vec<_> = devices
+/// One `locator<TAB>label` line per screen: what a program needs to offer a choice.
+fn devices_choices(devices: &[Device]) -> String {
+    devices
         .iter()
         .map(|device| {
-            json!({
-                "name": device.name,
-                "type": device.kind(),
-                "model": device.model,
-                "id": device.id,
-                "address": device.ip.to_string(),
-                "locator": device.locator,
-            })
+            let detail = if device.model.is_empty() {
+                device.kind().to_string()
+            } else {
+                format!("{}, {}", device.kind(), device.model)
+            };
+            // A tab or a line break in a name would break the line format.
+            let name = device.name.replace(['\t', '\n', '\r'], " ");
+            format!("{}\t{name} ({detail})\n", device.locator)
         })
-        .collect();
-    json!(list).to_string()
+        .collect()
 }
 
 fn devices_table(devices: &[Device]) -> String {

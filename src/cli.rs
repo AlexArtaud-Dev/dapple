@@ -14,15 +14,20 @@ pub const HELP: &str = "\
 dapple - cast local video files to the TVs and screens on your network
 
 USAGE
-  dapple devices [--timeout <seconds>] [--json]
+  dapple devices [--timeout <seconds>] [--json | --choices]
   dapple cast <file> --to <device> [options]
   dapple status|pause|resume|stop --to <device>
   dapple seek <time> --to <device>
   dapple volume <0-100> --to <device>
+  dapple relay [--listen <address:port>] [--timeout <seconds>]
 
 <device> is a name (or part of it), an id or an address shown by 'dapple devices', or a
 locator that needs no discovery: chromecast://192.168.1.50 or the http:// URL of a
 DLNA description.
+
+Where multicast does not pass (a container on a bridge network), run 'dapple relay' on a
+machine that sees the screens: it lists them on http://<address>:8691/devices. Point other
+commands at it with --relay <address>; in a container, a relay on the host is found alone.
 
 CAST OPTIONS
   -t, --to <device>        Screen to play on (required)
@@ -78,13 +83,34 @@ pub struct CastOptions {
     pub verbose: bool,
 }
 
+/// How `dapple devices` writes what it found.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Format {
+    Table,
+    Json,
+    /// One `locator<TAB>label` line per screen, for programs offering a choice.
+    Choices,
+}
+
+/// A command with what applies to all of them.
+#[derive(Debug, PartialEq)]
+pub struct Parsed {
+    pub command: Command,
+    /// A relay to ask for the screens (`--relay`).
+    pub relay: Option<String>,
+}
+
 #[derive(Debug, PartialEq)]
 pub enum Command {
     Help,
     Version,
     Devices {
         timeout: f64,
-        json: bool,
+        format: Format,
+    },
+    Relay {
+        listen: String,
+        timeout: f64,
     },
     Cast(Box<CastOptions>),
     Control {
@@ -116,12 +142,22 @@ fn timeout(text: &str) -> Result<f64> {
 }
 
 /// Reads the arguments following the program name.
-pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command> {
+pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
+    let mut relay = None;
+    let command = parse_command(arguments, &mut relay)?;
+    Ok(Parsed { command, relay })
+}
+
+fn parse_command(
+    arguments: impl IntoIterator<Item = OsString>,
+    relay: &mut Option<String>,
+) -> Result<Command> {
     let mut parser = lexopt::Parser::from_args(arguments);
     let mut positionals: Vec<String> = Vec::new();
     let mut to = None;
     let mut wait = DEFAULT_TIMEOUT;
-    let mut json = false;
+    let mut format = Format::Table;
+    let mut listen = format!("0.0.0.0:{}", crate::relay::PORT);
     let mut cast = CastOptions {
         file: PathBuf::new(),
         to: String::new(),
@@ -147,7 +183,10 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command> {
             Short('V') | Long("version") => return Ok(Command::Version),
             Short('t') | Long("to") => to = Some(parser.value()?.string()?),
             Long("timeout") => wait = timeout(&parser.value()?.string()?)?,
-            Long("json") => json = true,
+            Long("json") => format = Format::Json,
+            Long("choices") => format = Format::Choices,
+            Long("relay") => *relay = Some(parser.value()?.string()?),
+            Long("listen") => listen = parser.value()?.string()?,
             Short('s') | Long("subtitles") => {
                 cast.subtitles = Some(PathBuf::from(parser.value()?));
                 cast_only = Some("--subtitles");
@@ -258,10 +297,17 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command> {
         "help" => Ok(Command::Help),
         "version" => Ok(Command::Version),
         "devices" => {
-            expect(0, "devices [--timeout <seconds>] [--json]")?;
+            expect(0, "devices [--timeout <seconds>] [--json | --choices]")?;
             Ok(Command::Devices {
                 timeout: wait,
-                json,
+                format,
+            })
+        }
+        "relay" => {
+            expect(0, "relay [--listen <address:port>] [--timeout <seconds>]")?;
+            Ok(Command::Relay {
+                listen,
+                timeout: wait,
             })
         }
         "cast" => {
@@ -324,7 +370,7 @@ mod tests {
     use super::*;
 
     fn run(line: &str) -> Result<Command> {
-        parse(line.split_whitespace().map(OsString::from))
+        parse(line.split_whitespace().map(OsString::from)).map(|parsed| parsed.command)
     }
 
     fn message(line: &str) -> String {
@@ -342,16 +388,46 @@ mod tests {
             run("devices").unwrap(),
             Command::Devices {
                 timeout: 3.0,
-                json: false
+                format: Format::Table
             }
         );
         assert_eq!(
             run("devices --json --timeout 5").unwrap(),
             Command::Devices {
                 timeout: 5.0,
-                json: true
+                format: Format::Json
             }
         );
+        assert_eq!(
+            run("devices --choices").unwrap(),
+            Command::Devices {
+                timeout: 3.0,
+                format: Format::Choices
+            }
+        );
+        assert_eq!(
+            run("relay").unwrap(),
+            Command::Relay {
+                listen: "0.0.0.0:8691".into(),
+                timeout: 3.0
+            }
+        );
+        assert_eq!(
+            run("relay --listen 172.31.250.1:9000 --timeout 5").unwrap(),
+            Command::Relay {
+                listen: "172.31.250.1:9000".into(),
+                timeout: 5.0
+            }
+        );
+        assert!(message("relay now").contains("usage: dapple relay"));
+        let parsed = parse(
+            "devices --relay 172.31.250.1"
+                .split_whitespace()
+                .map(OsString::from),
+        )
+        .unwrap();
+        assert_eq!(parsed.relay.as_deref(), Some("172.31.250.1"));
+        assert_eq!(parse([OsString::from("devices")]).unwrap().relay, None);
         assert!(message("devices extra").contains("usage: dapple devices"));
         assert!(message("devices --timeout 0").contains("invalid timeout"));
         assert!(message("devices --start 5").contains("--start only applies"));
