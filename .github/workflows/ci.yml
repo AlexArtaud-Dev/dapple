@@ -102,6 +102,9 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: sha256sum dapple-* > SHA256SUMS
+      # Canopy installs the plugin from this manifest: it must carry the released version.
+      - name: Canopy plugin manifest
+        run: sed "s/^version: .*/version: ${GITHUB_REF_NAME#v}/" canopy-plugin.yaml > dist/canopy-plugin.yaml
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

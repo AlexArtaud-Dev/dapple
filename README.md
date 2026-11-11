@@ -103,9 +103,24 @@ Everything is scriptable: `dapple devices --json` lists screens with their locat
 success, 1 on failure, 2 on a usage error, and `status`, `pause`, `resume`, `seek`, `volume`
 and `stop` drive a screen from another process.
 
-dapple is developed alongside [Canopy](https://github.com/AlexArtaud-Dev/Canopy), a
-self-hosted file manager, which will offer it as a "Cast to…" action. It does not depend on
-Canopy in any way.
+## As a Canopy plugin
+
+dapple is also a plugin for [Canopy](https://github.com/AlexArtaud-Dev/Canopy), a self-hosted
+file manager; it does not depend on Canopy in any way. Every release carries
+`canopy-plugin.yaml`: add `AlexArtaud-Dev/dapple` under **Administration → Plugins → Sources**,
+install it, and the Commands page offers *Find screens*, *Cast a video*, *Pause*, *Resume*,
+*Jump*, *Volume* and *Stop*. A cast is a Canopy operation: its progress is live, and
+cancelling it stops the film.
+
+Casting needs network paths that Canopy's default compose file closes on purpose:
+
+- the engine must be able to **reach the screen** (its network must not be `internal`);
+- the screen must be able to **reach the engine**: publish a port of the engine container
+  and fill in *Address the screen uses to reach Canopy* (the Docker host's LAN address) and
+  *Media server port* (the published port);
+- *Find screens* relies on multicast, which Docker bridges do not carry: give screens by
+  locator (`chromecast://192.168.1.42`, or a DLNA description URL), or run the engine with
+  host networking.
 
 ## Limits today
 

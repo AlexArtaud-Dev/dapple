@@ -1,0 +1,213 @@
+# Canopy plugin manifest. The release workflow sets `version` from the tag and publishes this
+# file next to the binaries and SHA256SUMS.
+id: dapple
+name: { en: Cast to a screen, fr: Diffuser sur un écran, es: Enviar a una pantalla }
+description:
+  en: Plays a video on a TV or screen of the network (Chromecast, Google TV, DLNA smart TVs) and controls playback.
+  fr: Lit une vidéo sur une TV ou un écran du réseau (Chromecast, Google TV, TV connectées DLNA) et pilote la lecture.
+  es: Reproduce un vídeo en un televisor o pantalla de la red (Chromecast, Google TV, televisores DLNA) y controla la reproducción.
+version: 0.0.0
+binary: dapple
+source:
+  repo: AlexArtaud-Dev/dapple
+  checksums: SHA256SUMS
+  assets:
+    linux-amd64: dapple-linux-amd64
+    linux-arm64: dapple-linux-arm64
+commands:
+  - id: dapple.devices
+    name: { en: Find screens, fr: Chercher les écrans, es: Buscar pantallas }
+    description:
+      en: Lists the screens found on the network with their address. The last column is a locator that reaches a screen without searching.
+      fr: Liste les écrans trouvés sur le réseau avec leur adresse. La dernière colonne est un localisateur qui atteint un écran sans recherche.
+      es: Lista las pantallas encontradas en la red con su dirección. La última columna es un localizador que alcanza una pantalla sin búsqueda.
+    binary: dapple
+    mode: basic
+    params:
+      - name: timeout
+        type: int
+        min: 1
+        max: 30
+        default: 4
+        label: { en: Search time (seconds), fr: Durée de recherche (secondes), es: Tiempo de búsqueda (segundos) }
+    args: ['devices', '--timeout={timeout}']
+    progressParser: none
+    timeout: 2m
+
+  - id: dapple.cast
+    name: { en: Cast a video, fr: Diffuser une vidéo, es: Enviar un vídeo }
+    description:
+      en: Plays the video on the chosen screen until it ends. Cancel the operation to stop playback. What the screen cannot play is converted on the fly when ffmpeg is installed.
+      fr: Lit la vidéo sur l’écran choisi jusqu’à la fin. Annulez l’opération pour arrêter la lecture. Ce que l’écran ne lit pas est converti à la volée si ffmpeg est installé.
+      es: Reproduce el vídeo en la pantalla elegida hasta el final. Cancele la operación para detener la reproducción. Lo que la pantalla no reproduce se convierte al vuelo si ffmpeg está instalado.
+    binary: dapple
+    mode: basic
+    params:
+      - name: file
+        type: path
+        access: read
+        required: true
+        label: { en: Video, fr: Vidéo, es: Vídeo }
+      - name: device
+        type: string
+        required: true
+        pattern: '[^-].{0,199}'
+        label:
+          {
+            en: 'Screen (name, address or locator)',
+            fr: 'Écran (nom, adresse ou localisateur)',
+            es: 'Pantalla (nombre, dirección o localizador)',
+          }
+      - name: subtitles
+        type: path
+        access: read
+        flag: '--subtitles={value}'
+        label: { en: Subtitles (.srt or .vtt), fr: Sous-titres (.srt ou .vtt), es: Subtítulos (.srt o .vtt) }
+      - name: start
+        type: string
+        pattern: '[0-9]{1,2}(:[0-9]{2}){0,2}'
+        flag: '--start={value}'
+        label: { en: 'Start at (1:02:03)', fr: 'Démarrer à (1:02:03)', es: 'Empezar en (1:02:03)' }
+      - name: audio
+        type: int
+        min: 0
+        max: 31
+        flag: '--audio={value}'
+        label: { en: Audio track (from 0), fr: Piste audio (à partir de 0), es: Pista de audio (desde 0) }
+      - name: transcode
+        type: enum
+        default: auto
+        flag: '--transcode={value}'
+        label: { en: Conversion, fr: Conversion, es: Conversión }
+        choices:
+          - { value: auto, label: { en: When needed, fr: Si nécessaire, es: Si es necesario } }
+          - { value: always, label: { en: Always, fr: Toujours, es: Siempre } }
+          - { value: never, label: { en: Never, fr: Jamais, es: Nunca } }
+      - name: volume
+        type: int
+        min: 0
+        max: 100
+        flag: '--volume={value}'
+        label: { en: Volume (0-100), fr: Volume (0-100), es: Volumen (0-100) }
+      - name: host
+        type: string
+        pattern: '[A-Za-z0-9][A-Za-z0-9.-]{0,252}'
+        flag: '--host={value}'
+        label:
+          {
+            en: Address the screen uses to reach Canopy,
+            fr: Adresse par laquelle l’écran joint Canopy,
+            es: Dirección con la que la pantalla alcanza Canopy,
+          }
+      - name: port
+        type: int
+        min: 1
+        max: 65535
+        flag: '--port={value}'
+        label: { en: Media server port, fr: Port du serveur de médias, es: Puerto del servidor de medios }
+    args: ['cast', '{flags}', '--plain', '--to', '{device}', '--', '{file}']
+    progressParser: percent-regex
+    progressPattern: '^(?P<percent>[0-9]{1,3})% '
+    timeout: 12h
+
+  - id: dapple.status
+    name: { en: Playback status, fr: État de la lecture, es: Estado de la reproducción }
+    description:
+      en: Shows what the screen is doing and where it is in the video.
+      fr: Affiche ce que fait l’écran et où il en est dans la vidéo.
+      es: Muestra lo que hace la pantalla y por dónde va el vídeo.
+    binary: dapple
+    mode: basic
+    params:
+      - &device
+        name: device
+        type: string
+        required: true
+        pattern: '[^-].{0,199}'
+        label:
+          {
+            en: 'Screen (name, address or locator)',
+            fr: 'Écran (nom, adresse ou localisateur)',
+            es: 'Pantalla (nombre, dirección o localizador)',
+          }
+    args: ['status', '--to', '{device}']
+    progressParser: none
+    timeout: 2m
+
+  - id: dapple.pause
+    name: { en: Pause, fr: Mettre en pause, es: Pausar }
+    description:
+      en: Pauses what the screen is playing.
+      fr: Met en pause ce que l’écran lit.
+      es: Pausa lo que la pantalla reproduce.
+    binary: dapple
+    mode: basic
+    params: [*device]
+    args: ['pause', '--to', '{device}']
+    progressParser: none
+    timeout: 2m
+
+  - id: dapple.resume
+    name: { en: Resume, fr: Reprendre, es: Reanudar }
+    description:
+      en: Resumes playback on the screen.
+      fr: Reprend la lecture sur l’écran.
+      es: Reanuda la reproducción en la pantalla.
+    binary: dapple
+    mode: basic
+    params: [*device]
+    args: ['resume', '--to', '{device}']
+    progressParser: none
+    timeout: 2m
+
+  - id: dapple.stop
+    name: { en: Stop, fr: Arrêter, es: Detener }
+    description:
+      en: Stops playback on the screen.
+      fr: Arrête la lecture sur l’écran.
+      es: Detiene la reproducción en la pantalla.
+    binary: dapple
+    mode: basic
+    params: [*device]
+    args: ['stop', '--to', '{device}']
+    progressParser: none
+    timeout: 2m
+
+  - id: dapple.seek
+    name: { en: Jump to a position, fr: Aller à une position, es: Ir a una posición }
+    description:
+      en: Jumps to a position of the video being played. A video converted on the fly cannot be jumped in this way.
+      fr: Va à une position de la vidéo en cours. Une vidéo convertie à la volée ne peut pas être déplacée ainsi.
+      es: Va a una posición del vídeo en curso. Un vídeo convertido al vuelo no admite este salto.
+    binary: dapple
+    mode: basic
+    params:
+      - *device
+      - name: position
+        type: string
+        required: true
+        pattern: '[0-9]{1,2}(:[0-9]{2}){0,2}'
+        label: { en: 'Position (1:02:03)', fr: 'Position (1:02:03)', es: 'Posición (1:02:03)' }
+    args: ['seek', '{position}', '--to', '{device}']
+    progressParser: none
+    timeout: 2m
+
+  - id: dapple.volume
+    name: { en: Set the volume, fr: Régler le volume, es: Ajustar el volumen }
+    description:
+      en: Sets the volume of the screen.
+      fr: Règle le volume de l’écran.
+      es: Ajusta el volumen de la pantalla.
+    binary: dapple
+    mode: basic
+    params:
+      - *device
+      - name: level
+        type: int
+        min: 0
+        max: 100
+        required: true
+        label: { en: Volume (0-100), fr: Volume (0-100), es: Volumen (0-100) }
+    args: ['volume', '{level}', '--to', '{device}']
+    progressParser: none
+    timeout: 2m
