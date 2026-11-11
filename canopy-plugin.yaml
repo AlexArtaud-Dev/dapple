@@ -8,8 +8,8 @@ description:
   es: Reproduce un vídeo en un televisor o pantalla de la red (Chromecast, Google TV, televisores DLNA) y controla la reproducción.
 version: 0.0.0
 binary: dapple
-# Commands on files (`on`, `extensions`) came with this Canopy version.
-minCanopy: 2026.11.7
+# Choices read from a command (`choicesFrom`) came with this Canopy version.
+minCanopy: 2026.11.8
 source:
   repo: AlexArtaud-Dev/dapple
   checksums: SHA256SUMS
@@ -20,9 +20,9 @@ commands:
   - id: dapple.devices
     name: { en: Find screens, fr: Chercher les écrans, es: Buscar pantallas }
     description:
-      en: Lists the screens found on the network with their address. The last column is a locator that reaches a screen without searching.
-      fr: Liste les écrans trouvés sur le réseau avec leur adresse. La dernière colonne est un localisateur qui atteint un écran sans recherche.
-      es: Lista las pantallas encontradas en la red con su dirección. La última columna es un localizador que alcanza una pantalla sin búsqueda.
+      en: Lists the screens found on the network, each with the locator that reaches it. In a container, a dapple relay on the host is asked.
+      fr: Liste les écrans trouvés sur le réseau, chacun avec le localisateur qui l’atteint. Dans un container, un relais dapple sur l’hôte est interrogé.
+      es: Lista las pantallas encontradas en la red, cada una con el localizador que la alcanza. En un contenedor, se consulta un relé dapple en el anfitrión.
     binary: dapple
     mode: basic
     params:
@@ -32,7 +32,18 @@ commands:
         max: 30
         default: 4
         label: { en: Search time (seconds), fr: Durée de recherche (secondes), es: Tiempo de búsqueda (segundos) }
-    args: ['devices', '--timeout={timeout}']
+      - name: relay
+        type: string
+        pattern: '[A-Za-z0-9][A-Za-z0-9.:-]{0,252}'
+        flag: '--relay={value}'
+        label:
+          {
+            en: 'Relay address (when screens are not found)',
+            fr: 'Adresse du relais (si les écrans ne sont pas trouvés)',
+            es: 'Dirección del relé (si no se encuentran pantallas)',
+          }
+    # One `locator<TAB>name` line per screen: what Canopy reads to offer a choice.
+    args: ['devices', '--choices', '--timeout={timeout}', '{flags}']
     progressParser: none
     timeout: 2m
 
@@ -57,6 +68,8 @@ commands:
         type: string
         required: true
         pattern: '[^-].{0,199}'
+        # The Detect button of the form runs this command and offers what it finds.
+        choicesFrom: dapple.devices
         label:
           {
             en: 'Screen (name, address or locator)',
@@ -129,6 +142,7 @@ commands:
         type: string
         required: true
         pattern: '[^-].{0,199}'
+        choicesFrom: dapple.devices
         label:
           {
             en: 'Screen (name, address or locator)',
