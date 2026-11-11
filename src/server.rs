@@ -8,6 +8,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -39,11 +40,17 @@ pub struct Conversion {
 pub struct MediaServer {
     port: u16,
     token: String,
+    requests: Arc<AtomicUsize>,
 }
 
 impl MediaServer {
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// How many requests arrived: none means the screen never reached this machine.
+    pub fn requests(&self) -> usize {
+        self.requests.load(Ordering::Relaxed)
     }
 
     /// The path of something served, below the secret prefix.
@@ -59,8 +66,11 @@ pub fn start(bind: SocketAddr, source: Source) -> Result<MediaServer> {
     let port = listener.local_addr()?.port();
     let token = random_token();
     let shared = Arc::new((source, token.clone()));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&requests);
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
+            counter.fetch_add(1, Ordering::Relaxed);
             let shared = Arc::clone(&shared);
             // TVs open several connections at once (probing, then playing): one thread each.
             thread::spawn(move || {
@@ -73,7 +83,11 @@ pub fn start(bind: SocketAddr, source: Source) -> Result<MediaServer> {
             });
         }
     });
-    Ok(MediaServer { port, token })
+    Ok(MediaServer {
+        port,
+        token,
+        requests,
+    })
 }
 
 /// 128 bits from the operating system's randomness, through the standard hasher's seeds.
@@ -486,6 +500,7 @@ mod tests {
             stream.read_to_string(&mut answer).unwrap();
             answer
         };
+        assert_eq!(server.requests(), 0);
         let whole = get(&server.path("file.mp4"), None);
         assert!(
             whole.starts_with("HTTP/1.1 200 OK\r\n") && whole.ends_with("\r\n\r\n0123456789"),
@@ -507,6 +522,7 @@ mod tests {
         assert!(get(&server.path("subtitles.srt"), None).starts_with("HTTP/1.1 404 "));
         assert!(get(&server.path("stream.mp4"), None).starts_with("HTTP/1.1 404 "));
         assert!(get("/guess/file.mp4", None).starts_with("HTTP/1.1 404 "));
+        assert_eq!(server.requests(), 7);
         std::fs::remove_file(path).unwrap();
     }
 }

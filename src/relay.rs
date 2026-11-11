@@ -4,7 +4,7 @@
 //! It answers one question, `GET /devices`, and nothing else: it plays nothing and reads no file.
 
 use std::io::Write;
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,6 +15,7 @@ use crate::discovery::{self, Device};
 use crate::error::Result;
 use crate::fail;
 use crate::http;
+use crate::network;
 use crate::server;
 
 /// The port relays listen on, and where one is looked for.
@@ -37,21 +38,58 @@ pub fn from_json(body: &[u8]) -> Result<Vec<Device>> {
     Ok(list.iter().filter_map(Device::from_json).collect())
 }
 
-/// Where a relay publishes its devices, from what was given: `host`, `host:port` or a URL.
-pub fn devices_url(relay: &str) -> String {
+/// The address of a relay as a URL, from what was given: `host`, `host:port` or a URL.
+pub fn base_url(relay: &str) -> String {
     let relay = relay.trim().trim_end_matches('/');
-    let base = if relay.starts_with("http://") {
+    let relay = relay.strip_suffix("/devices").unwrap_or(relay);
+    if relay.starts_with("http://") {
         relay.to_string()
     } else if relay.contains(':') {
         format!("http://{relay}")
     } else {
         format!("http://{relay}:{PORT}")
-    };
-    if base.ends_with("/devices") {
-        base
-    } else {
-        format!("{base}/devices")
     }
+}
+
+/// Where a relay publishes its devices.
+pub fn devices_url(relay: &str) -> String {
+    format!("{}/devices", base_url(relay))
+}
+
+/// The relay to ask: the one given with `--relay`, else, for a program running in a container,
+/// one on its gateway, which is the machine hosting it.
+pub fn locate(given: Option<&str>) -> Option<String> {
+    match given {
+        Some(relay) => Some(relay.to_string()),
+        None if network::in_container() => network::default_gateway().map(|ip| ip.to_string()),
+        None => None,
+    }
+}
+
+/// Asks a relay at which address a device can reach the machine the relay runs on. A program in
+/// a container only knows its own address there, which no screen can reach: the relay, on the
+/// host's network, knows the right one.
+pub fn host_address(relay: &str, device: IpAddr, limit: Duration) -> Result<String> {
+    let url = format!("{}/address?for={device}", base_url(relay));
+    let response = http::request("GET", &url, &[], &[], limit)
+        .map_err(|error| fail!("cannot reach the relay at {url}: {error}"))?;
+    let value: Value = serde_json::from_slice(&response.body)?;
+    value["address"]
+        .as_str()
+        .filter(|_| response.status == 200)
+        .map(str::to_string)
+        .ok_or_else(|| fail!("the relay at {url} does not know that address"))
+}
+
+/// The answer to `GET /address?for=<device>`.
+fn address_for(query: &str) -> Option<String> {
+    let device: IpAddr = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("for="))?
+        .parse()
+        .ok()?;
+    let address = network::local_ip_for(device)?;
+    Some(serde_json::json!({ "address": address.to_string() }).to_string())
 }
 
 /// Asks a relay for the screens it sees.
@@ -90,11 +128,18 @@ fn answer(mut stream: TcpStream, cache: &Cache, wait: Duration) -> std::io::Resu
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     let head = server::read_head(&mut stream)?;
     let request = server::parse_request(&head);
+    let query = request
+        .as_ref()
+        .map_or("", |request| request.query.as_str());
     let (status, body) = match request
         .as_ref()
         .map(|request| (request.method.as_str(), request.path.as_str()))
     {
         Some(("GET", "/devices")) => ("200 OK", devices(cache, wait)),
+        Some(("GET", "/address")) => match address_for(query) {
+            Some(body) => ("200 OK", body),
+            None => ("404 Not Found", "{}".to_string()),
+        },
         Some(("GET", "/health")) => ("200 OK", "{}".to_string()),
         _ => ("404 Not Found", "{}".to_string()),
     };
@@ -126,6 +171,8 @@ mod tests {
 
     #[test]
     fn finds_the_devices_url() {
+        assert_eq!(base_url("host:9000/devices"), "http://host:9000");
+        assert_eq!(locate(Some("relay.lan")).as_deref(), Some("relay.lan"));
         assert_eq!(
             devices_url("172.31.250.1"),
             "http://172.31.250.1:8691/devices"
@@ -178,6 +225,17 @@ mod tests {
             (200, b"[]".to_vec())
         );
         assert_eq!(get("/health").status, 200);
+        assert_eq!(
+            get("/address?for=127.0.0.1").body,
+            b"{\"address\":\"127.0.0.1\"}".to_vec()
+        );
+        assert_eq!(get("/address?for=nowhere").status, 404);
+        assert_eq!(get("/address").status, 404);
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        assert_eq!(
+            host_address(&address.to_string(), loopback, Duration::from_secs(5)).unwrap(),
+            "127.0.0.1"
+        );
         assert_eq!(get("/").status, 404);
         assert_eq!(get("/devices/extra").status, 404);
         assert_eq!(

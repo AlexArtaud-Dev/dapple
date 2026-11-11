@@ -113,14 +113,16 @@ commands:
         flag: '--host={value}'
         label:
           {
-            en: Address the screen uses to reach Canopy,
-            fr: Adresse par laquelle l’écran joint Canopy,
-            es: Dirección con la que la pantalla alcanza Canopy,
+            en: 'Address the screen uses to reach Canopy (found by itself with a relay)',
+            fr: 'Adresse par laquelle l’écran joint Canopy (trouvée seule avec un relais)',
+            es: 'Dirección con la que la pantalla alcanza Canopy (hallada sola con un relé)',
           }
       - name: port
         type: int
         min: 1
         max: 65535
+        # The port Canopy's compose file publishes for casting.
+        default: 8690
         flag: '--port={value}'
         label: { en: Media server port, fr: Port du serveur de médias, es: Puerto del servidor de medios }
     args: ['cast', '{flags}', '--plain', '--to', '{device}', '--', '{file}']

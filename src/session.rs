@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 
 use crate::cli::{CastOptions, EncoderChoice, Key};
 use crate::discovery::{self, Endpoint};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::fail;
 use crate::media::{self, Encoder, Mode, Target};
 use crate::network;
+use crate::relay;
 use crate::renderer::{self, Media, Renderer, State, Status};
 use crate::server::{self, Conversion, MediaServer, Source};
 use crate::subtitles::{self, Subtitles};
@@ -218,14 +219,7 @@ pub fn cast(options: CastOptions, relay: Option<&str>) -> Result<()> {
 
     let host = match &options.host {
         Some(host) => host.clone(),
-        None => network::local_ip_for(device.ip)
-            .ok_or_else(|| {
-                fail!(
-                    "cannot tell which address {} can reach this machine at (use --host)",
-                    device.ip
-                )
-            })?
-            .to_string(),
+        None => reachable_address(device.ip, relay)?,
     };
     let server = server::start(
         SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), options.port),
@@ -272,7 +266,12 @@ pub fn cast(options: CastOptions, relay: Option<&str>) -> Result<()> {
     );
     if let Err(error) = cast.load(options.start) {
         // The device refused the file as stored: convert it, if that was left to us.
-        if cast.converted || cast.converted_mime.is_none() || options.transcode != Mode::Auto {
+        let can_retry =
+            !cast.converted && cast.converted_mime.is_some() && options.transcode == Mode::Auto;
+        if cast.server.requests() == 0 {
+            return Err(unreached(&error, &cast.base));
+        }
+        if !can_retry {
             return Err(error);
         }
         println!("The device refused the file as stored ({error}); converting it.");
@@ -283,6 +282,29 @@ pub fn cast(options: CastOptions, relay: Option<&str>) -> Result<()> {
         cast.renderer.set_volume(volume)?;
     }
     follow(&mut cast, options.plain || !io::stdout().is_terminal())
+}
+
+/// The address the screen must use to reach this machine. In a container the machine's own
+/// address is one no screen can reach: a relay on the host knows the right one.
+fn reachable_address(device: IpAddr, relay_address: Option<&str>) -> Result<String> {
+    if let Some(relay_address) = relay::locate(relay_address) {
+        if let Ok(address) = relay::host_address(&relay_address, device, Duration::from_secs(5)) {
+            return Ok(address);
+        }
+    }
+    network::local_ip_for(device)
+        .map(|address| address.to_string())
+        .ok_or_else(|| {
+            fail!("cannot tell which address {device} can reach this machine at (use --host)")
+        })
+}
+
+/// A refusal when the screen never came for the video is a network problem, not a format one.
+pub fn unreached(error: &Error, base: &str) -> Error {
+    fail!(
+        "{error}: the screen never fetched the video from {base}. Check that this address is \
+         this machine's on the screen's network (--host) and that the port is open (--port)"
+    )
 }
 
 fn inputs() -> mpsc::Receiver<Input> {
@@ -404,6 +426,15 @@ mod tests {
         assert!(should_convert(Mode::Auto, true, false, false).unwrap());
         assert!(should_convert(Mode::Auto, true, true, true).unwrap());
         assert!(!should_convert(Mode::Auto, false, false, true).unwrap());
+    }
+
+    #[test]
+    fn explains_a_screen_that_never_came() {
+        let error = unreached(&fail!("refused"), "http://10.0.0.2:8690");
+        assert!(error
+            .0
+            .starts_with("refused: the screen never fetched the video from http://10.0.0.2:8690."));
+        assert!(error.0.contains("--host") && error.0.contains("--port"));
     }
 
     #[test]

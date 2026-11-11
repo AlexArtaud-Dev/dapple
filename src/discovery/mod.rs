@@ -240,13 +240,13 @@ pub fn find(wait: Duration, relay_address: Option<&str>) -> Result<Vec<Device>> 
         return relay::ask(address, wait);
     }
     let devices = discover(wait);
-    if !devices.is_empty() || !network::in_container() {
+    if !devices.is_empty() {
         return Ok(devices);
     }
-    let Some(gateway) = network::default_gateway() else {
-        return Ok(devices);
-    };
-    Ok(relay::ask(&gateway.to_string(), wait).unwrap_or(devices))
+    match relay::locate(None) {
+        Some(gateway) => Ok(relay::ask(&gateway, wait).unwrap_or(devices)),
+        None => Ok(devices),
+    }
 }
 
 /// Finds the device named by `--to`.

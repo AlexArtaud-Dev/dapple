@@ -1,6 +1,6 @@
 [package]
 name = "dapple"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.82"
 description = "Cast local video files to the TVs and screens on your network (Chromecast, DLNA/UPnP)"
