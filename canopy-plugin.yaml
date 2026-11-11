@@ -8,6 +8,8 @@ description:
   es: Reproduce un vídeo en un televisor o pantalla de la red (Chromecast, Google TV, televisores DLNA) y controla la reproducción.
 version: 0.0.0
 binary: dapple
+# Commands on files (`on`, `extensions`) came with this Canopy version.
+minCanopy: 2026.11.7
 source:
   repo: AlexArtaud-Dev/dapple
   checksums: SHA256SUMS
@@ -46,6 +48,9 @@ commands:
       - name: file
         type: path
         access: read
+        # Offered in the file browser when a video or a piece of music is right-clicked.
+        on: file
+        extensions: [mkv, mp4, m4v, webm, avi, mov, ts, m2ts, mts, mpg, mpeg, wmv, flv, mp3, flac, m4a, ogg, opus, wav]
         required: true
         label: { en: Video, fr: Vidéo, es: Vídeo }
       - name: device

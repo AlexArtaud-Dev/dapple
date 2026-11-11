@@ -108,9 +108,15 @@ and `stop` drive a screen from another process.
 dapple is also a plugin for [Canopy](https://github.com/AlexArtaud-Dev/Canopy), a self-hosted
 file manager; it does not depend on Canopy in any way. Every release carries
 `canopy-plugin.yaml`: add `AlexArtaud-Dev/dapple` under **Administration → Plugins → Sources**,
-install it, and the Commands page offers *Find screens*, *Cast a video*, *Pause*, *Resume*,
+install it. Right-click a video, **Plugins › Cast to a screen › Cast a video**: the form opens
+with the file filled in. The Commands page also offers *Find screens*, *Pause*, *Resume*,
 *Jump*, *Volume* and *Stop*. A cast is a Canopy operation: its progress is live, and
-cancelling it stops the film.
+cancelling it stops the film. Needs Canopy 2026.11.7 or later.
+
+Save your screens once, on the plugin's card (**Saved values**): pick the field *Screen*, name
+it ("Living room TV") and give its locator. Do the same for *Address the screen uses to reach
+Canopy* and *Media server port*: every form then starts filled in, and screens are picked by
+name.
 
 Casting needs network paths that Canopy's default compose file closes on purpose:
 
