@@ -110,6 +110,8 @@ jobs:
           echo "list=$image:${GITHUB_REF_NAME#v},$image:latest" >> "$GITHUB_OUTPUT"
       # Built on every push so that a broken image is seen before a release; pushed on tags.
       - uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -136,6 +138,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          # Only the binaries: the image job leaves a build record among the artifacts.
+          pattern: dapple-*
           merge-multiple: true
       - name: Checksums
         working-directory: dist
