@@ -1,9 +1,11 @@
 //! What every kind of screen can do, whatever protocol it speaks.
 
+use crate::airplay::{self, AirPlay};
 use crate::chromecast::Chromecast;
 use crate::discovery::{Device, Endpoint};
 use crate::dlna::Dlna;
 use crate::error::Result;
+use crate::fail;
 
 /// What a device is asked to play.
 #[derive(Clone, Debug, Default)]
@@ -54,5 +56,22 @@ pub fn connect(device: &Device) -> Result<Box<dyn Renderer>> {
     Ok(match &device.endpoint {
         Endpoint::Dlna { av, rendering } => Box::new(Dlna::new(av.clone(), rendering.clone())),
         Endpoint::Chromecast { address } => Box::new(Chromecast::open(*address)?),
+        Endpoint::AirPlay { address } => {
+            let names = pairing_names(device);
+            let credentials = airplay::store::load(&[&names[0], &names[1]]).ok_or_else(|| {
+                fail!(
+                    "{} is not paired yet: run 'dapple pair --to {}' once, with the screen in sight",
+                    device.name,
+                    device.locator
+                )
+            })?;
+            Box::new(AirPlay::open(*address, &credentials)?)
+        }
     })
+}
+
+/// The names a pairing is kept under: the device's own identifier, and its address for when it
+/// is reached by locator.
+pub fn pairing_names(device: &Device) -> [String; 2] {
+    [device.id.clone(), device.ip.to_string()]
 }

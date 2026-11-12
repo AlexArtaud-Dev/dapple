@@ -7,7 +7,10 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::time::{Duration, Instant};
 
 const GROUP: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 251), 5353);
-const SERVICE: &str = "_googlecast._tcp.local";
+/// Google Cast devices.
+pub const CAST: &str = "_googlecast._tcp.local";
+/// AirPlay devices (Apple TV, AirPlay 2 televisions and speakers).
+pub const AIRPLAY: &str = "_airplay._tcp.local";
 
 const TYPE_A: u16 = 1;
 const TYPE_PTR: u16 = 12;
@@ -21,6 +24,8 @@ pub struct CastDevice {
     pub model: String,
     pub id: String,
     pub address: SocketAddr,
+    /// Whether it shows video; AirPlay speakers announce themselves on the same service.
+    pub video: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -37,14 +42,14 @@ pub struct Record {
     pub data: Data,
 }
 
-/// Asks the network for Cast devices.
-pub fn search(local: Ipv4Addr, wait: Duration) -> Vec<CastDevice> {
+/// Asks the network for the devices of a service.
+pub fn search(local: Ipv4Addr, wait: Duration, service: &str) -> Vec<CastDevice> {
     let mut devices: Vec<CastDevice> = Vec::new();
     let Ok(socket) = UdpSocket::bind((local, 0)) else {
         return devices;
     };
     let _ = socket.set_read_timeout(Some(Duration::from_millis(200)));
-    let question = query(SERVICE);
+    let question = query(service);
     for _ in 0..2 {
         let _ = socket.send_to(&question, GROUP);
     }
@@ -54,7 +59,7 @@ pub fn search(local: Ipv4Addr, wait: Duration) -> Vec<CastDevice> {
         let Ok((size, source)) = socket.recv_from(&mut buffer) else {
             continue;
         };
-        for device in devices_in(&parse(&buffer[..size]), source.ip()) {
+        for device in devices_in(&parse(&buffer[..size]), source.ip(), service) {
             if !devices.iter().any(|known| known.address == device.address) {
                 devices.push(device);
             }
@@ -180,13 +185,13 @@ fn about<'a>(records: &'a [Record], name: &'a str) -> impl Iterator<Item = &'a R
 }
 
 /// Assembles the records of one answer into devices; `source` is who sent the answer.
-pub fn devices_in(records: &[Record], source: IpAddr) -> Vec<CastDevice> {
+pub fn devices_in(records: &[Record], source: IpAddr, service: &str) -> Vec<CastDevice> {
     let mut devices = Vec::new();
     for record in records {
         let Data::Pointer(instance) = &record.data else {
             continue;
         };
-        if !record.name.eq_ignore_ascii_case(SERVICE) {
+        if !record.name.eq_ignore_ascii_case(service) {
             continue;
         }
         let Some((port, target)) = about(records, instance).find_map(|r| match &r.data {
@@ -211,20 +216,108 @@ pub fn devices_in(records: &[Record], source: IpAddr) -> Vec<CastDevice> {
                 _ => None,
             })
             .unwrap_or(source);
-        let label = instance.split("._googlecast").next().unwrap_or(instance);
+        let suffix = format!(".{service}");
+        let label = match instance
+            .to_ascii_lowercase()
+            .rfind(&suffix.to_ascii_lowercase())
+        {
+            Some(end) => &instance[..end],
+            None => instance.as_str(),
+        };
+        // Cast names its fields fn/md/id, AirPlay model/deviceid; AirPlay's lowest feature bit
+        // is video.
+        let video = match text("features") {
+            Some(features) => video_feature(&features),
+            None => true,
+        };
         devices.push(CastDevice {
             name: text("fn").unwrap_or_else(|| label.to_string()),
-            model: text("md").unwrap_or_default(),
-            id: text("id").unwrap_or_else(|| label.to_string()),
+            model: text("md").or_else(|| text("model")).unwrap_or_default(),
+            id: text("id")
+                .or_else(|| text("deviceid"))
+                .unwrap_or_else(|| label.to_string()),
             address: SocketAddr::new(ip, port),
+            video,
         });
     }
     devices
 }
 
+/// Reads AirPlay's `features` ("0x4A7FDFD5,0x3C177FDE", low word first): bit 0 is video.
+pub fn video_feature(features: &str) -> bool {
+    let low = features.split(',').next().unwrap_or("").trim();
+    let digits = low.trim_start_matches("0x").trim_start_matches("0X");
+    u64::from_str_radix(digits, 16).is_ok_and(|bits| bits & 1 == 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SERVICE: &str = CAST;
+
+    #[test]
+    fn reads_airplay_announcements() {
+        assert!(video_feature("0x4A7FDFD5,0x3C177FDE"));
+        assert!(!video_feature("0x4A7FCA00,0xBC354BD0"));
+        assert!(!video_feature("nonsense"));
+        let records = vec![
+            Record {
+                name: AIRPLAY.into(),
+                data: Data::Pointer("Home Cinema._airplay._tcp.local".into()),
+            },
+            Record {
+                name: AIRPLAY.into(),
+                data: Data::Pointer("Kitchen._airplay._tcp.local".into()),
+            },
+            Record {
+                name: "Home Cinema._airplay._tcp.local".into(),
+                data: Data::Service {
+                    port: 7000,
+                    target: "tv.local".into(),
+                },
+            },
+            Record {
+                name: "Home Cinema._airplay._tcp.local".into(),
+                data: Data::Text(vec![
+                    ("model".into(), "AppleTV14,1".into()),
+                    ("deviceid".into(), "AA:BB:CC:DD:EE:FF".into()),
+                    ("features".into(), "0x4A7FDFD5,0x3C177FDE".into()),
+                ]),
+            },
+            Record {
+                name: "Kitchen._airplay._tcp.local".into(),
+                data: Data::Service {
+                    port: 7000,
+                    target: "pod.local".into(),
+                },
+            },
+            Record {
+                name: "Kitchen._airplay._tcp.local".into(),
+                data: Data::Text(vec![("features".into(), "0x4A7FCA00,0xBC354BD0".into())]),
+            },
+            Record {
+                name: "tv.local".into(),
+                data: Data::Address(Ipv4Addr::new(192, 168, 1, 114)),
+            },
+        ];
+        let devices = devices_in(&records, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), AIRPLAY);
+        assert_eq!(
+            devices[0],
+            CastDevice {
+                name: "Home Cinema".into(),
+                model: "AppleTV14,1".into(),
+                id: "AA:BB:CC:DD:EE:FF".into(),
+                address: "192.168.1.114:7000".parse().unwrap(),
+                video: true
+            }
+        );
+        assert_eq!(
+            (devices[1].name.as_str(), devices[1].video),
+            ("Kitchen", false)
+        );
+        assert!(devices_in(&records, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), CAST).is_empty());
+    }
 
     fn name(labels: &str) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -280,7 +373,7 @@ mod tests {
     #[test]
     fn reads_a_cast_answer() {
         let source = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 99));
-        let devices = devices_in(&parse(&answer()), source);
+        let devices = devices_in(&parse(&answer()), source, CAST);
         assert_eq!(
             devices,
             vec![CastDevice {
@@ -288,6 +381,7 @@ mod tests {
                 model: "Chromecast Ultra".into(),
                 id: "abc123".into(),
                 address: "192.168.1.42:8009".parse().unwrap(),
+                video: true,
             }]
         );
     }
@@ -316,7 +410,7 @@ mod tests {
             },
         ];
         let source = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7));
-        let devices = devices_in(&records, source);
+        let devices = devices_in(&records, source, CAST);
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].name, "Tv");
         assert_eq!(devices[0].id, "Tv");

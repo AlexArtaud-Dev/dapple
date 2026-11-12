@@ -28,6 +28,8 @@ pub struct Source {
     pub conversion: Option<Conversion>,
     pub vtt: Option<String>,
     pub srt: Option<String>,
+    /// The folder of an HLS conversion, served by file name.
+    pub hls: Option<PathBuf>,
     pub verbose: bool,
 }
 
@@ -91,7 +93,7 @@ pub fn start(bind: SocketAddr, source: Source) -> Result<MediaServer> {
 }
 
 /// 128 bits from the operating system's randomness, through the standard hasher's seeds.
-fn random_token() -> String {
+pub fn random_token() -> String {
     let word = || RandomState::new().build_hasher().finish();
     format!("{:016x}{:016x}", word(), word())
 }
@@ -132,6 +134,8 @@ pub enum Route {
     Stream,
     Vtt,
     Srt,
+    /// A file of the HLS conversion: its playlist or one of its segments.
+    Hls(String),
 }
 
 /// What a path designates: `/<token>/<name>.<extension>`, the extension being for the device.
@@ -140,6 +144,9 @@ pub fn route(path: &str, token: &str) -> Option<Route> {
         .strip_prefix('/')?
         .strip_prefix(token)?
         .strip_prefix('/')?;
+    if let Some(file) = name.strip_prefix("hls/") {
+        return crate::hls::safe_name(file).then(|| Route::Hls(file.to_string()));
+    }
     match name.split('.').next()? {
         "file" => Some(Route::File),
         "stream" => Some(Route::Stream),
@@ -205,36 +212,102 @@ pub fn start_of(query: &str) -> f64 {
 }
 
 pub(crate) fn read_head(stream: &mut TcpStream) -> io::Result<String> {
-    let mut head = Vec::new();
-    let mut byte = [0u8; 1024];
-    while !head.windows(4).any(|window| window == b"\r\n\r\n") {
-        let read = stream.read(&mut byte)?;
-        if read == 0 || head.len() > MAX_HEAD {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "incomplete request",
-            ));
-        }
-        head.extend_from_slice(&byte[..read]);
-    }
-    Ok(String::from_utf8_lossy(&head).into_owned())
+    next_head(stream, &mut Vec::new())?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "incomplete request"))
 }
 
-/// Headers every answer carries: Cast players fetch with CORS, and nothing is kept alive.
-const COMMON: &str = "Server: dapple\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\
+/// Takes the head of one request off the front of what was received; the rest stays.
+pub fn take_head(pending: &mut Vec<u8>) -> Option<String> {
+    let end = pending
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")?
+        + 4;
+    let head = String::from_utf8_lossy(&pending[..end]).into_owned();
+    pending.drain(..end);
+    Some(head)
+}
+
+/// The next request on a connection that stays open between requests; `None` once the client
+/// has left, or stayed silent for too long.
+fn next_head(stream: &mut TcpStream, pending: &mut Vec<u8>) -> io::Result<Option<String>> {
+    let mut chunk = [0u8; 2048];
+    loop {
+        if let Some(head) = take_head(pending) {
+            return Ok(Some(head));
+        }
+        if pending.len() > MAX_HEAD {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request too large",
+            ));
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) => return Ok(None),
+            Ok(read) => pending.extend_from_slice(&chunk[..read]),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Ok(None)
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Headers every answer carries: Cast players fetch with CORS.
+const COMMON: &str = "Server: dapple\r\nAccess-Control-Allow-Origin: *\r\n\
                       Access-Control-Allow-Headers: Range, Content-Type\r\n\
                       Access-Control-Expose-Headers: Content-Range, Content-Length, Accept-Ranges\r\n";
 
+/// Connections stay open between requests: Apple's player gives up on a stream whose every
+/// piece costs it a new connection. Only an answer without a length ends with the connection.
 fn answer(stream: &mut TcpStream, status: &str, headers: &str) -> io::Result<()> {
-    stream.write_all(format!("HTTP/1.1 {status}\r\n{COMMON}{headers}\r\n").as_bytes())
+    let connection = if headers.contains("Connection: ") {
+        ""
+    } else {
+        "Connection: keep-alive\r\n"
+    };
+    stream.write_all(format!("HTTP/1.1 {status}\r\n{COMMON}{connection}{headers}\r\n").as_bytes())
+}
+
+/// Whether the connection ends after this request: the client asked, or the answer is a
+/// conversion piped without a length.
+pub fn closes(head: &str, path: &str, token: &str) -> bool {
+    let asked = head
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .any(|(name, value)| {
+            name.trim().eq_ignore_ascii_case("connection")
+                && value.trim().eq_ignore_ascii_case("close")
+        });
+    asked || route(path, token) == Some(Route::Stream)
 }
 
 fn serve(mut stream: TcpStream, source: &Source, token: &str) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(15)))?;
-    let head = read_head(&mut stream)?;
-    let Some(request) = parse_request(&head) else {
-        return answer(&mut stream, "400 Bad Request", "Content-Length: 0\r\n");
-    };
+    let mut pending = Vec::new();
+    while let Some(head) = next_head(&mut stream, &mut pending)? {
+        let Some(request) = parse_request(&head) else {
+            return answer(&mut stream, "400 Bad Request", "Content-Length: 0\r\n");
+        };
+        let last = closes(&head, &request.path, token);
+        respond(&mut stream, &request, source, token)?;
+        if last {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn respond(
+    stream: &mut TcpStream,
+    request: &Request,
+    source: &Source,
+    token: &str,
+) -> io::Result<()> {
     if source.verbose {
         eprintln!(
             "[server] {} {} {}",
@@ -248,18 +321,12 @@ fn serve(mut stream: TcpStream, source: &Source, token: &str) -> io::Result<()> 
         "HEAD" => false,
         "OPTIONS" => {
             return answer(
-                &mut stream,
+                stream,
                 "204 No Content",
-                "Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n",
+                "Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\nContent-Length: 0\r\n",
             )
         }
-        _ => {
-            return answer(
-                &mut stream,
-                "405 Method Not Allowed",
-                "Content-Length: 0\r\n",
-            )
-        }
+        _ => return answer(stream, "405 Method Not Allowed", "Content-Length: 0\r\n"),
     };
     let text = |stream: &mut TcpStream, content: &Option<String>, mime: &str| match content {
         Some(content) => {
@@ -279,31 +346,54 @@ fn serve(mut stream: TcpStream, source: &Source, token: &str) -> io::Result<()> 
         None => answer(stream, "404 Not Found", "Content-Length: 0\r\n"),
     };
     match (route(&request.path, token), &source.conversion) {
-        (Some(Route::File), _) => send_file(&mut stream, source, request.range.as_deref(), body),
-        (Some(Route::Stream), Some(conversion)) => send_conversion(
-            &mut stream,
-            source,
-            conversion,
-            start_of(&request.query),
+        (Some(Route::File), _) => send_file(
+            stream,
+            &source.path,
+            &source.mime,
+            request.range.as_deref(),
             body,
         ),
-        (Some(Route::Vtt), _) => text(&mut stream, &source.vtt, "text/vtt; charset=utf-8"),
-        (Some(Route::Srt), _) => text(&mut stream, &source.srt, "text/srt; charset=utf-8"),
-        _ => answer(&mut stream, "404 Not Found", "Content-Length: 0\r\n"),
+        (Some(Route::Hls(name)), _) => match &source.hls {
+            Some(folder) => {
+                let mime = if name.ends_with(".m3u8") {
+                    media::HLS_MIME
+                } else {
+                    "video/mp4"
+                };
+                send_file(
+                    stream,
+                    &folder.join(name),
+                    mime,
+                    request.range.as_deref(),
+                    body,
+                )
+            }
+            None => answer(stream, "404 Not Found", "Content-Length: 0\r\n"),
+        },
+        (Some(Route::Stream), Some(conversion)) => {
+            send_conversion(stream, source, conversion, start_of(&request.query), body)
+        }
+        (Some(Route::Vtt), _) => text(stream, &source.vtt, "text/vtt; charset=utf-8"),
+        (Some(Route::Srt), _) => text(stream, &source.srt, "text/srt; charset=utf-8"),
+        _ => answer(stream, "404 Not Found", "Content-Length: 0\r\n"),
     }
 }
 
 fn send_file(
     stream: &mut TcpStream,
-    source: &Source,
+    path: &std::path::Path,
+    mime: &str,
     range: Option<&str>,
     body: bool,
 ) -> io::Result<()> {
-    let mut file = File::open(&source.path)?;
+    let Ok(mut file) = File::open(path) else {
+        // A segment already deleted, or not written yet.
+        return answer(stream, "404 Not Found", "Content-Length: 0\r\n");
+    };
     let size = file.metadata()?.len();
     let dlna = format!(
         "Content-Type: {}\r\nAccept-Ranges: bytes\r\ntransferMode.dlna.org: Streaming\r\ncontentFeatures.dlna.org: {}\r\n",
-        source.mime,
+        mime,
         dlna::content_features(true)
     );
     let (first, last) = match parse_range(range, size) {
@@ -354,7 +444,7 @@ fn send_conversion(
         stream,
         "200 OK",
         &format!(
-            "Content-Type: {}\r\ntransferMode.dlna.org: Streaming\r\ncontentFeatures.dlna.org: {}\r\n",
+            "Connection: close\r\nContent-Type: {}\r\ntransferMode.dlna.org: Streaming\r\ncontentFeatures.dlna.org: {}\r\n",
             conversion.convert.mime(),
             dlna::content_features(false)
         ),
@@ -419,11 +509,56 @@ mod tests {
     }
 
     #[test]
+    fn keeps_connections_open() {
+        let mut pending =
+            b"GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\n\r\nGET /c".to_vec();
+        assert_eq!(
+            take_head(&mut pending).unwrap(),
+            "GET /a HTTP/1.1\r\nHost: x\r\n\r\n"
+        );
+        assert_eq!(take_head(&mut pending).unwrap(), "GET /b HTTP/1.1\r\n\r\n");
+        assert_eq!(take_head(&mut pending), None);
+        assert_eq!(pending, b"GET /c");
+
+        assert!(!closes(
+            "GET /tok/file.mp4 HTTP/1.1\r\nHost: x\r\n\r\n",
+            "/tok/file.mp4",
+            "tok"
+        ));
+        assert!(closes(
+            "GET /tok/file.mp4 HTTP/1.1\r\nconnection: Close\r\n\r\n",
+            "/tok/file.mp4",
+            "tok"
+        ));
+        assert!(closes(
+            "GET /tok/stream.ts HTTP/1.1\r\n\r\n",
+            "/tok/stream.ts",
+            "tok"
+        ));
+        assert!(!closes(
+            "GET /tok/hls/seg00001.m4s HTTP/1.1\r\nConnection: keep-alive\r\n\r\n",
+            "/tok/hls/seg00001.m4s",
+            "tok"
+        ));
+    }
+
+    #[test]
     fn routes() {
         assert_eq!(route("/tok/file.mkv", "tok"), Some(Route::File));
         assert_eq!(route("/tok/stream.ts", "tok"), Some(Route::Stream));
         assert_eq!(route("/tok/subtitles.vtt", "tok"), Some(Route::Vtt));
         assert_eq!(route("/tok/subtitles.srt", "tok"), Some(Route::Srt));
+        assert_eq!(
+            route("/tok/hls/index.m3u8", "tok"),
+            Some(Route::Hls("index.m3u8".into()))
+        );
+        assert_eq!(
+            route("/tok/hls/seg00001.m4s", "tok"),
+            Some(Route::Hls("seg00001.m4s".into()))
+        );
+        assert_eq!(route("/tok/hls/../file.mkv", "tok"), None);
+        assert_eq!(route("/tok/hls/a/b.m4s", "tok"), None);
+        assert_eq!(route("/tok/hls/", "tok"), None);
         for other in [
             "/tok/subtitles.txt",
             "/tok/other",
@@ -487,6 +622,7 @@ mod tests {
             conversion: None,
             vtt: Some("WEBVTT\n".into()),
             srt: None,
+            hls: Some(std::env::temp_dir()),
             verbose: false,
         };
         let server = start("127.0.0.1:0".parse().unwrap(), source).unwrap();
@@ -495,7 +631,12 @@ mod tests {
             let range = range
                 .map(|range| format!("Range: {range}\r\n"))
                 .unwrap_or_default();
-            write!(stream, "GET {} HTTP/1.1\r\nHost: x\r\n{range}\r\n", name).unwrap();
+            write!(
+                stream,
+                "GET {} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n{range}\r\n",
+                name
+            )
+            .unwrap();
             let mut answer = String::new();
             stream.read_to_string(&mut answer).unwrap();
             answer
@@ -522,7 +663,36 @@ mod tests {
         assert!(get(&server.path("subtitles.srt"), None).starts_with("HTTP/1.1 404 "));
         assert!(get(&server.path("stream.mp4"), None).starts_with("HTTP/1.1 404 "));
         assert!(get("/guess/file.mp4", None).starts_with("HTTP/1.1 404 "));
-        assert_eq!(server.requests(), 7);
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let segment = get(&server.path(&format!("hls/{name}")), Some("bytes=0-1"));
+        assert!(
+            segment.starts_with("HTTP/1.1 206 ") && segment.ends_with("\r\n\r\n01"),
+            "{segment}"
+        );
+        assert!(get(&server.path("hls/missing.m4s"), None).starts_with("HTTP/1.1 404 "));
+        assert_eq!(server.requests(), 9);
+        // One connection serves several requests in a row.
+        let mut stream = TcpStream::connect(("127.0.0.1", server.port())).unwrap();
+        for _ in 0..2 {
+            write!(
+                stream,
+                "GET {} HTTP/1.1\r\nHost: x\r\nRange: bytes=0-1\r\n\r\n",
+                server.path("file.mp4")
+            )
+            .unwrap();
+            let mut answer = Vec::new();
+            let mut byte = [0u8; 1];
+            while !answer.ends_with(b"\r\n\r\n01") {
+                stream.read_exact(&mut byte).unwrap();
+                answer.push(byte[0]);
+            }
+            let answer = String::from_utf8(answer).unwrap();
+            assert!(
+                answer.starts_with("HTTP/1.1 206 ")
+                    && answer.contains("Connection: keep-alive\r\n"),
+                "{answer}"
+            );
+        }
         std::fs::remove_file(path).unwrap();
     }
 }

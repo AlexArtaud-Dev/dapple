@@ -1,9 +1,9 @@
 [package]
 name = "dapple"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.82"
-description = "Cast local video files to the TVs and screens on your network (Chromecast, DLNA/UPnP)"
+description = "Cast local video files to the TVs and screens on your network (Chromecast, AirPlay, DLNA/UPnP)"
 license = "MIT"
 repository = "https://github.com/AlexArtaud-Dev/dapple"
 keywords = ["cast", "chromecast", "dlna", "upnp", "video"]
@@ -12,6 +12,8 @@ categories = ["command-line-utilities", "multimedia::video"]
 [dependencies]
 ctrlc = "3"
 lexopt = "0.3"
+num-bigint = "0.4"
+ring = "0.17"
 roxmltree = "0.20"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde_json = "1"

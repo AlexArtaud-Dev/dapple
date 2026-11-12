@@ -3,13 +3,13 @@
 id: dapple
 name: { en: Cast to a screen, fr: Diffuser sur un écran, es: Enviar a una pantalla }
 description:
-  en: Plays a video on a TV or screen of the network (Chromecast, Google TV, DLNA smart TVs) and controls playback.
-  fr: Lit une vidéo sur une TV ou un écran du réseau (Chromecast, Google TV, TV connectées DLNA) et pilote la lecture.
-  es: Reproduce un vídeo en un televisor o pantalla de la red (Chromecast, Google TV, televisores DLNA) y controla la reproducción.
+  en: Plays a video on a TV or screen of the network (Chromecast, Google TV, Apple TV, DLNA smart TVs) and controls playback.
+  fr: Lit une vidéo sur une TV ou un écran du réseau (Chromecast, Google TV, Apple TV, TV connectées DLNA) et pilote la lecture.
+  es: Reproduce un vídeo en un televisor o pantalla de la red (Chromecast, Google TV, Apple TV, televisores DLNA) y controla la reproducción.
 version: 0.0.0
 binary: dapple
-# Choices read from a command (`choicesFrom`) came with this Canopy version.
-minCanopy: 2026.11.8
+# Plugins get a data folder (pairings, conversions) from this Canopy version.
+minCanopy: 2026.11.10
 source:
   repo: AlexArtaud-Dev/dapple
   checksums: SHA256SUMS
@@ -154,6 +154,42 @@ commands:
     args: ['status', '--to', '{device}']
     progressParser: none
     timeout: 2m
+
+  - id: dapple.pair
+    name: { en: Pair an Apple TV, fr: Jumeler un Apple TV, es: Emparejar un Apple TV }
+    description:
+      en: Apple TVs and AirPlay screens ask for a pairing, once. This shows a code on the screen and waits five minutes for it - enter it with "Enter the pairing code".
+      fr: Les Apple TV et écrans AirPlay demandent un jumelage, une seule fois. Ceci affiche un code sur l’écran et l’attend cinq minutes - saisissez-le avec « Saisir le code de jumelage ».
+      es: Los Apple TV y pantallas AirPlay piden un emparejamiento, una sola vez. Esto muestra un código en la pantalla y lo espera cinco minutos - introdúzcalo con «Introducir el código de emparejamiento».
+    binary: dapple
+    mode: basic
+    params: [*device]
+    args: ['pair', '--to', '{device}']
+    progressParser: none
+    timeout: 6m
+
+  - id: dapple.pair-code
+    name:
+      {
+        en: Enter the pairing code,
+        fr: Saisir le code de jumelage,
+        es: Introducir el código de emparejamiento,
+      }
+    description:
+      en: Hands the code shown on the screen to the pairing that waits for it.
+      fr: Transmet le code affiché sur l’écran au jumelage qui l’attend.
+      es: Entrega el código mostrado en la pantalla al emparejamiento que lo espera.
+    binary: dapple
+    mode: basic
+    params:
+      - name: code
+        type: string
+        required: true
+        pattern: '[0-9]{4,8}'
+        label: { en: Code shown on the screen, fr: Code affiché sur l’écran, es: Código mostrado en la pantalla }
+    args: ['pair', '--code', '{code}']
+    progressParser: none
+    timeout: 1m
 
   - id: dapple.pause
     name: { en: Pause, fr: Mettre en pause, es: Pausar }

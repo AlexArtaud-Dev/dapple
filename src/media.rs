@@ -23,6 +23,7 @@ pub struct Probe {
 pub enum Target {
     Chromecast,
     Dlna,
+    AirPlay,
 }
 
 /// When to convert (`--transcode`).
@@ -49,11 +50,13 @@ pub struct Convert {
 }
 
 impl Convert {
-    /// Chromecast plays fragmented MP4 as it arrives; TVs expect an MPEG transport stream.
+    /// Chromecast plays fragmented MP4 as it arrives; TVs expect an MPEG transport stream;
+    /// Apple's player only takes a stream it can address by pieces, an HLS playlist.
     pub fn mime(&self) -> &'static str {
         match self.target {
             Target::Chromecast => "video/mp4",
             Target::Dlna => "video/mpeg",
+            Target::AirPlay => HLS_MIME,
         }
     }
 
@@ -61,9 +64,13 @@ impl Convert {
         match self.target {
             Target::Chromecast => "mp4",
             Target::Dlna => "ts",
+            Target::AirPlay => "m3u8",
         }
     }
 }
+
+/// The content type of an HLS playlist.
+pub const HLS_MIME: &str = "application/vnd.apple.mpegurl";
 
 /// The content type announced for a file sent as stored.
 pub fn mime_for(extension: &str) -> &'static str {
@@ -94,6 +101,18 @@ pub fn plays_directly(target: Target, probe: Option<&Probe>, extension: &str) ->
     if target == Target::Dlna {
         return true;
     }
+    if target == Target::AirPlay {
+        // Apple's player reads MP4 and QuickTime files, with the codecs Apple devices decode.
+        let container = matches!(extension, "mp4" | "m4v" | "mov" | "mp3" | "m4a");
+        return container
+            && probe.is_none_or(|probe| {
+                matches!(probe.video.as_str(), "" | "h264" | "hevc")
+                    && matches!(
+                        probe.audio.as_str(),
+                        "" | "aac" | "ac3" | "eac3" | "mp3" | "alac"
+                    )
+            });
+    }
     let container = matches!(
         extension,
         "mp4" | "m4v" | "webm" | "mkv" | "mp3" | "flac" | "m4a" | "ogg" | "wav"
@@ -121,6 +140,10 @@ pub fn convert_for(target: Target, probe: Option<&Probe>, audio_track: usize) ->
         Target::Dlna => (
             matches!(video, "h264" | "hevc" | "mpeg2video"),
             matches!(audio, "aac" | "ac3" | "eac3" | "mp3" | "mp2"),
+        ),
+        Target::AirPlay => (
+            matches!(video, "h264" | "hevc"),
+            matches!(audio, "aac" | "ac3" | "eac3"),
         ),
     };
     Convert {
@@ -150,6 +173,85 @@ pub fn ffmpeg_args(
     start: f64,
     encoder: Encoder,
 ) -> Vec<OsString> {
+    let mut args = codec_args(input, probe, convert, start, encoder);
+    let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
+    match convert.target {
+        Target::Chromecast | Target::AirPlay => push(&[
+            "-movflags",
+            "frag_keyframe+empty_moov+default_base_moof",
+            "-f",
+            "mp4",
+        ]),
+        Target::Dlna => push(&["-f", "mpegts"]),
+    }
+    push(&["pipe:1"]);
+    args
+}
+
+/// Seconds of video produced at once when a conversion starts.
+const BURST_SECONDS: &str = "12";
+
+/// Seconds of video per HLS segment: short, so that playback starts after a few seconds.
+const SEGMENT_SECONDS: u32 = 2;
+/// The playlist file of an HLS conversion, in its folder.
+pub const PLAYLIST: &str = "index.m3u8";
+
+/// The ffmpeg command line writing the conversion as an HLS stream in its working folder: a
+/// playlist that grows as segments are produced, a little faster than they are watched.
+pub fn hls_args(
+    input: &Path,
+    probe: Option<&Probe>,
+    convert: &Convert,
+    start: f64,
+    encoder: Encoder,
+    burst: bool,
+) -> Vec<OsString> {
+    let mut args = codec_args(input, probe, convert, start, encoder);
+    if burst {
+        // The first seconds at once, so that playback starts without waiting for them.
+        let at = args.iter().position(|arg| arg == "-readrate").unwrap_or(0);
+        args.splice(
+            at..at,
+            ["-readrate_initial_burst", BURST_SECONDS].map(OsString::from),
+        );
+    }
+    let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
+    if !convert.video_copy {
+        // Segments start on keyframes: ask for one where each segment begins.
+        push(&[
+            "-force_key_frames",
+            &format!("expr:gte(t,n_forced*{SEGMENT_SECONDS})"),
+        ]);
+    }
+    push(&[
+        "-f",
+        "hls",
+        "-hls_time",
+        &SEGMENT_SECONDS.to_string(),
+        "-hls_playlist_type",
+        "event",
+        "-hls_segment_type",
+        "fmp4",
+        "-hls_flags",
+        "independent_segments",
+        "-hls_fmp4_init_filename",
+        "init.mp4",
+        "-hls_segment_filename",
+    ]);
+    // Plain names: ffmpeg runs in the conversion's folder. Given full paths, it writes the
+    // init file next to itself on systems whose paths use backslashes.
+    push(&["seg%05d.m4s", PLAYLIST]);
+    args
+}
+
+/// The part every conversion shares: the input, what is copied and what is re-encoded.
+fn codec_args(
+    input: &Path,
+    probe: Option<&Probe>,
+    convert: &Convert,
+    start: f64,
+    encoder: Encoder,
+) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
     push(&["-hide_banner", "-loglevel", "error", "-nostdin"]);
@@ -166,6 +268,10 @@ pub fn ffmpeg_args(
         // Before the input: a fast jump to the keyframe preceding the position.
         push(&["-ss", &format!("{start:.3}")]);
     }
+    if convert.target == Target::AirPlay {
+        // An HLS conversion is kept on disk: produce it barely faster than it is watched.
+        push(&["-readrate", "1.25"]);
+    }
     push(&["-i"]);
     args.push(input.as_os_str().to_owned());
     let audio = format!("0:a:{}?", convert.audio_track);
@@ -177,6 +283,10 @@ pub fn ffmpeg_args(
     );
     if convert.video_copy {
         push(&["-c:v", "copy"]);
+        if convert.target == Target::AirPlay && probe.is_some_and(|probe| probe.video == "hevc") {
+            // Apple devices only play HEVC labelled this way.
+            push(&["-tag:v", "hvc1"]);
+        }
     } else if on_gpu {
         push(&["-c:v", "h264_nvenc"]);
         push(&NVENC_RATE);
@@ -201,17 +311,9 @@ pub fn ffmpeg_args(
         (false, Target::Chromecast) => push(&["-c:a", "aac", "-b:a", "192k", "-ac", "2"]),
         // Every TV decodes AC-3, and it keeps surround sound.
         (false, Target::Dlna) => push(&["-c:a", "ac3", "-b:a", "448k"]),
+        // Enhanced AC-3 keeps surround sound and every Apple device decodes it.
+        (false, Target::AirPlay) => push(&["-c:a", "eac3", "-b:a", "640k"]),
     }
-    match convert.target {
-        Target::Chromecast => push(&[
-            "-movflags",
-            "frag_keyframe+empty_moov+default_base_moof",
-            "-f",
-            "mp4",
-        ]),
-        Target::Dlna => push(&["-f", "mpegts"]),
-    }
-    push(&["pipe:1"]);
     args
 }
 
@@ -278,6 +380,18 @@ fn runs(program: &str, args: &[&str]) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+/// Whether this ffmpeg can produce the start of a stream at once (6.1 and later).
+pub fn supports_burst() -> bool {
+    Command::new("ffmpeg")
+        .args(["-hide_banner", "-h", "full"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|output| {
+            String::from_utf8_lossy(&output.stdout).contains("readrate_initial_burst")
+        })
 }
 
 pub fn ffmpeg_available() -> bool {
@@ -501,6 +615,117 @@ mod tests {
             copy.contains("-c:v copy -c:a copy -f mpegts pipe:1") && !copy.contains("cuda"),
             "{copy}"
         );
+    }
+
+    #[test]
+    fn airplay_screens_get_mp4_or_hls() {
+        use Target::AirPlay;
+        assert!(plays_directly(
+            AirPlay,
+            Some(&probe_of("hevc", "eac3")),
+            "mp4"
+        ));
+        assert!(plays_directly(
+            AirPlay,
+            Some(&probe_of("h264", "aac")),
+            "mov"
+        ));
+        assert!(plays_directly(AirPlay, None, "m4v"));
+        assert!(!plays_directly(
+            AirPlay,
+            Some(&probe_of("hevc", "eac3")),
+            "mkv"
+        ));
+        assert!(!plays_directly(
+            AirPlay,
+            Some(&probe_of("vp9", "aac")),
+            "mp4"
+        ));
+        assert!(!plays_directly(
+            AirPlay,
+            Some(&probe_of("h264", "dts")),
+            "mp4"
+        ));
+
+        let hevc = probe_of("hevc", "eac3");
+        let copy = convert_for(AirPlay, Some(&hevc), 0);
+        assert_eq!(
+            (
+                copy.video_copy,
+                copy.audio_copy,
+                copy.mime(),
+                copy.extension()
+            ),
+            (true, true, HLS_MIME, "m3u8")
+        );
+        let args = line(&hls_args(
+            Path::new("film.mkv"),
+            Some(&hevc),
+            &copy,
+            0.0,
+            Encoder::Cpu,
+            false,
+        ));
+        assert!(args.starts_with("-hide_banner -loglevel error -nostdin -readrate 1.25 -i film.mkv -map 0:v:0? -map 0:a:0? -sn -dn -c:v copy -tag:v hvc1 -c:a copy -f hls -hls_time 2 -hls_playlist_type event -hls_segment_type fmp4 -hls_flags independent_segments -hls_fmp4_init_filename init.mp4 -hls_segment_filename "), "{args}");
+        assert!(
+            args.contains("seg%05d.m4s") && args.ends_with("index.m3u8"),
+            "{args}"
+        );
+
+        let old = probe_of("mpeg4", "dts");
+        let encode = convert_for(AirPlay, Some(&old), 1);
+        let args = line(&hls_args(
+            Path::new("film.avi"),
+            Some(&old),
+            &encode,
+            30.0,
+            Encoder::Cpu,
+            false,
+        ));
+        assert!(
+            args.contains("-ss 30.000 -readrate 1.25 -i film.avi -map 0:v:0? -map 0:a:1?"),
+            "{args}"
+        );
+        assert!(
+            args.contains("-c:v libx264")
+                && args.contains(
+                    "-c:a eac3 -b:a 640k -force_key_frames expr:gte(t,n_forced*2) -f hls"
+                ),
+            "{args}"
+        );
+        let h264 = probe_of("h264", "aac");
+        let plain = line(&hls_args(
+            Path::new("a.mkv"),
+            Some(&h264),
+            &convert_for(AirPlay, Some(&h264), 0),
+            0.0,
+            Encoder::Cpu,
+            false,
+        ));
+        assert!(
+            plain.contains("-c:v copy -c:a copy -f hls") && !plain.contains("hvc1"),
+            "{plain}"
+        );
+        let burst = line(&hls_args(
+            Path::new("a.mkv"),
+            Some(&h264),
+            &convert_for(AirPlay, Some(&h264), 0),
+            0.0,
+            Encoder::Cpu,
+            true,
+        ));
+        assert!(
+            burst.contains("-nostdin -readrate_initial_burst 12 -readrate 1.25 -i a.mkv"),
+            "{burst}"
+        );
+        let piped = line(&ffmpeg_args(
+            Path::new("a.mkv"),
+            Some(&h264),
+            &convert_for(AirPlay, Some(&h264), 0),
+            0.0,
+            Encoder::Cpu,
+        ));
+        assert!(piped.ends_with("-f mp4 pipe:1"), "{piped}");
     }
 
     #[test]

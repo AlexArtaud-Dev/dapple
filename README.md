@@ -23,10 +23,35 @@ p pause/resume · f/b ±30 s · +/- volume · <time> jump · q stop   (then Ente
 | ----------------------------------------------------------------------- | ----------- | ------- |
 | Chromecast, Google TV, Android TV (Sony, Philips, TCL…), Nest Hub       | Google Cast | yes     |
 | Smart TVs (Samsung, LG, Sony, Panasonic…), Kodi, VLC, most set-top boxes | DLNA / UPnP | yes     |
+| Apple TV and AirPlay 2 screens (tvOS 26 and later)                      | AirPlay     | yes     |
 | Roku, Fire TV                                                           | ECP, DIAL   | planned |
-| Apple TV and AirPlay screens                                            | AirPlay     | planned |
 
 A TV that speaks both Cast and DLNA is driven through Cast.
+
+## Apple TV and AirPlay
+
+AirPlay screens ask for a pairing, once:
+
+```console
+$ dapple pair --to "home cinema"
+Code shown on the screen: 0298
+Paired with Home Cinema (kept in ~/.config/dapple/pairings.json).
+```
+
+Without a terminal (a job started by another program), `dapple pair --to <screen>` waits five
+minutes for a second run, `dapple pair --code <code>`. Pairings live in dapple's data folder:
+`DAPPLE_DATA` when set, the folder a host program gives its plugins, else the user's
+configuration folder. The file holds private keys and is readable by its owner only.
+
+What it does and does not do:
+
+- Verified on an Apple TV 4K with tvOS 27. Since tvOS 26 a video is started through the
+  device's play queue; older versions used another request, which dapple does not send.
+- Apple's player reads MP4 and QuickTime files as stored. Anything else (MKV…) is repackaged
+  as an HLS stream, without re-encoding H.264, HEVC, AAC, AC-3 and E-AC-3; it is kept in a
+  temporary folder while watched, and what was watched two minutes ago is deleted.
+- The volume stays on the TV's remote. `pause`, `seek` and `stop` from another process are
+  not available yet: AirPlay keeps one session per sender.
 
 ## Install
 
@@ -171,7 +196,8 @@ Casting needs network paths that Canopy's default compose file closes on purpose
 
 ## Roadmap
 
-- Roku and Fire TV, then AirPlay
+- Roku and Fire TV
+- AirPlay: volume, and control from another process
 - Embedded subtitles and audio track listing
 - VAAPI and Quick Sync encoders
 

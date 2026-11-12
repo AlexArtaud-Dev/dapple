@@ -14,6 +14,8 @@ use crate::network;
 use crate::relay;
 
 const CAST_SCHEME: &str = "chromecast://";
+const AIRPLAY_SCHEME: &str = "airplay://";
+const AIRPLAY_PORT: u16 = 7000;
 const CAST_PORT: u16 = 8009;
 const DESCRIPTION_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -25,6 +27,9 @@ pub enum Endpoint {
         rendering: Option<String>,
     },
     Chromecast {
+        address: SocketAddr,
+    },
+    AirPlay {
         address: SocketAddr,
     },
 }
@@ -45,6 +50,7 @@ impl Device {
         match self.endpoint {
             Endpoint::Dlna { .. } => "dlna",
             Endpoint::Chromecast { .. } => "chromecast",
+            Endpoint::AirPlay { .. } => "airplay",
         }
     }
 
@@ -73,6 +79,9 @@ impl Device {
         let endpoint = match value["type"].as_str()? {
             "chromecast" => Endpoint::Chromecast {
                 address: locator.strip_prefix(CAST_SCHEME)?.parse().ok()?,
+            },
+            "airplay" => Endpoint::AirPlay {
+                address: locator.strip_prefix(AIRPLAY_SCHEME)?.parse().ok()?,
             },
             "dlna" => Endpoint::Dlna {
                 av: text("av")?,
@@ -103,6 +112,19 @@ impl Device {
         }
     }
 
+    fn airplay(device: mdns::CastDevice) -> Device {
+        Device {
+            name: device.name,
+            model: device.model,
+            id: device.id,
+            locator: format!("{AIRPLAY_SCHEME}{}", device.address),
+            ip: device.address.ip(),
+            endpoint: Endpoint::AirPlay {
+                address: device.address,
+            },
+        }
+    }
+
     fn dlna(description: ssdp::Description, location: &str) -> Option<Device> {
         let host = Url::parse(&description.av_control).ok()?.host;
         Some(Device {
@@ -122,7 +144,8 @@ impl Device {
 /// Looks for every screen for `wait`, both protocols at once.
 pub fn discover(wait: Duration) -> Vec<Device> {
     let local = network::primary_ipv4();
-    let cast = thread::spawn(move || mdns::search(local, wait));
+    let cast = thread::spawn(move || mdns::search(local, wait, mdns::CAST));
+    let airplay = thread::spawn(move || mdns::search(local, wait, mdns::AIRPLAY));
     let renderers = thread::spawn(move || {
         let lookups: Vec<_> = ssdp::search(local, wait)
             .into_iter()
@@ -144,6 +167,15 @@ pub fn discover(wait: Duration) -> Vec<Device> {
         .into_iter()
         .map(Device::cast)
         .collect();
+    // Speakers announce themselves on the AirPlay service too: only screens are kept.
+    devices.extend(
+        airplay
+            .join()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|device| device.video)
+            .map(Device::airplay),
+    );
     for device in renderers.join().unwrap_or_default() {
         // A renderer answers once per network interface it has.
         if !devices
@@ -178,6 +210,29 @@ pub fn from_locator(text: &str) -> Option<Result<Device>> {
                 model: String::new(),
                 id: address.to_string(),
                 address,
+                video: true,
+            })
+        }));
+    }
+    if let Some(address) = text.strip_prefix(AIRPLAY_SCHEME) {
+        let address = address.trim_end_matches('/');
+        let with_port = if address.contains(':') {
+            address.to_string()
+        } else {
+            format!("{address}:{AIRPLAY_PORT}")
+        };
+        let resolved = with_port
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut addresses| addresses.next())
+            .ok_or_else(|| fail!("cannot resolve {text}"));
+        return Some(resolved.map(|address| {
+            Device::airplay(mdns::CastDevice {
+                name: address.ip().to_string(),
+                model: String::new(),
+                id: address.ip().to_string(),
+                address,
+                video: true,
             })
         }));
     }
@@ -372,6 +427,24 @@ mod tests {
         let mut broken = silent.to_json();
         broken["address"] = "tv.local".into();
         assert_eq!(Device::from_json(&broken), None);
+    }
+
+    #[test]
+    fn airplay_screens_have_locators() {
+        let device = from_locator("airplay://192.168.1.114").unwrap().unwrap();
+        assert_eq!(device.kind(), "airplay");
+        assert_eq!(device.locator, "airplay://192.168.1.114:7000");
+        assert_eq!(
+            device.endpoint,
+            Endpoint::AirPlay {
+                address: "192.168.1.114:7000".parse().unwrap()
+            }
+        );
+        assert_eq!(Device::from_json(&device.to_json()), Some(device));
+        let other = from_locator("airplay://192.168.1.114:7100/")
+            .unwrap()
+            .unwrap();
+        assert_eq!(other.locator, "airplay://192.168.1.114:7100");
     }
 
     #[test]

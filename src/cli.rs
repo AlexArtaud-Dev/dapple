@@ -19,11 +19,16 @@ USAGE
   dapple status|pause|resume|stop --to <device>
   dapple seek <time> --to <device>
   dapple volume <0-100> --to <device>
+  dapple pair --to <device> [--code <code>]
   dapple relay [--listen <address:port>] [--timeout <seconds>]
 
 <device> is a name (or part of it), an id or an address shown by 'dapple devices', or a
-locator that needs no discovery: chromecast://192.168.1.50 or the http:// URL of a
-DLNA description.
+locator that needs no discovery: chromecast://192.168.1.50, airplay://192.168.1.60 or the
+http:// URL of a DLNA description.
+
+Apple TVs and other AirPlay screens ask for a pairing, once: 'dapple pair --to <device>'
+shows a code on the screen and asks for it. Without a terminal it waits for a second run,
+'dapple pair --to <device> --code <code>'.
 
 Where multicast does not pass (a container on a bridge network), run 'dapple relay' on a
 machine that sees the screens: it lists them on http://<address>:8691/devices. Point other
@@ -98,6 +103,8 @@ pub struct Parsed {
     pub command: Command,
     /// A relay to ask for the screens (`--relay`).
     pub relay: Option<String>,
+    /// Trace what is exchanged with screens (`--verbose`).
+    pub verbose: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -110,6 +117,12 @@ pub enum Command {
     },
     Relay {
         listen: String,
+        timeout: f64,
+    },
+    Pair {
+        to: String,
+        /// The code read on the screen, handed to a pairing that waits for it.
+        code: Option<String>,
         timeout: f64,
     },
     Cast(Box<CastOptions>),
@@ -144,13 +157,19 @@ fn timeout(text: &str) -> Result<f64> {
 /// Reads the arguments following the program name.
 pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
     let mut relay = None;
-    let command = parse_command(arguments, &mut relay)?;
-    Ok(Parsed { command, relay })
+    let mut verbose = false;
+    let command = parse_command(arguments, &mut relay, &mut verbose)?;
+    Ok(Parsed {
+        command,
+        relay,
+        verbose,
+    })
 }
 
 fn parse_command(
     arguments: impl IntoIterator<Item = OsString>,
     relay: &mut Option<String>,
+    verbose: &mut bool,
 ) -> Result<Command> {
     let mut parser = lexopt::Parser::from_args(arguments);
     let mut positionals: Vec<String> = Vec::new();
@@ -158,6 +177,7 @@ fn parse_command(
     let mut wait = DEFAULT_TIMEOUT;
     let mut format = Format::Table;
     let mut listen = format!("0.0.0.0:{}", crate::relay::PORT);
+    let mut code = None;
     let mut cast = CastOptions {
         file: PathBuf::new(),
         to: String::new(),
@@ -187,6 +207,7 @@ fn parse_command(
             Long("choices") => format = Format::Choices,
             Long("relay") => *relay = Some(parser.value()?.string()?),
             Long("listen") => listen = parser.value()?.string()?,
+            Long("code") => code = Some(parser.value()?.string()?),
             Short('s') | Long("subtitles") => {
                 cast.subtitles = Some(PathBuf::from(parser.value()?));
                 cast_only = Some("--subtitles");
@@ -253,7 +274,7 @@ fn parse_command(
             }
             Short('v') | Long("verbose") => {
                 cast.verbose = true;
-                cast_only = Some("--verbose");
+                *verbose = true;
             }
             Value(value) if positionals.is_empty() => positionals.push(value.string()?),
             // A file name may not be valid Unicode: keep it as the system gave it.
@@ -301,6 +322,20 @@ fn parse_command(
             Ok(Command::Devices {
                 timeout: wait,
                 format,
+            })
+        }
+        "pair" => {
+            let usage = "pair --to <device> [--code <code>]";
+            expect(0, usage)?;
+            // The code goes to the pairing that waits for it, whatever its screen.
+            let to = match &code {
+                Some(_) => to.clone().unwrap_or_default(),
+                None => device(usage)?,
+            };
+            Ok(Command::Pair {
+                to,
+                code,
+                timeout: wait,
             })
         }
         "relay" => {
@@ -420,6 +455,35 @@ mod tests {
             }
         );
         assert!(message("relay now").contains("usage: dapple relay"));
+        assert_eq!(
+            run("pair --to tv").unwrap(),
+            Command::Pair {
+                to: "tv".into(),
+                code: None,
+                timeout: 3.0
+            }
+        );
+        assert_eq!(
+            run("pair -t airplay://192.168.1.60 --code 0298").unwrap(),
+            Command::Pair {
+                to: "airplay://192.168.1.60".into(),
+                code: Some("0298".into()),
+                timeout: 3.0
+            }
+        );
+        assert!(message("pair").contains("which device?"));
+        assert_eq!(
+            run("pair --code 0298").unwrap(),
+            Command::Pair {
+                to: String::new(),
+                code: Some("0298".into()),
+                timeout: 3.0
+            }
+        );
+        assert!(message("pair now --to tv").contains("usage: dapple pair"));
+        let traced = parse("devices -v".split_whitespace().map(OsString::from)).unwrap();
+        assert!(traced.verbose);
+        assert!(!parse([OsString::from("devices")]).unwrap().verbose);
         let parsed = parse(
             "devices --relay 172.31.250.1"
                 .split_whitespace()

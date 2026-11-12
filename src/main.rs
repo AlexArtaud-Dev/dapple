@@ -1,13 +1,17 @@
 //! dapple casts local video files to the TVs and screens on the network.
 
+mod airplay;
 mod chromecast;
 mod cli;
+mod debug;
 mod discovery;
 mod dlna;
 mod error;
+mod hls;
 mod http;
 mod media;
 mod network;
+mod pairing;
 mod relay;
 mod renderer;
 mod server;
@@ -35,7 +39,11 @@ fn main() {
     }
 }
 
-fn run(Parsed { command, relay }: Parsed) -> Result<()> {
+fn run(parsed: Parsed) -> Result<()> {
+    if parsed.verbose {
+        debug::enable();
+    }
+    let Parsed { command, relay, .. } = parsed;
     let relay = relay.as_deref();
     match command {
         Command::Help => println!("{}", cli::HELP),
@@ -57,6 +65,12 @@ fn run(Parsed { command, relay }: Parsed) -> Result<()> {
                 .map_err(|_| fail!("invalid --listen \"{listen}\" (use address:port)"))?;
             relay::serve(listen, Duration::from_secs_f64(timeout))?;
         }
+        Command::Pair { to, code, timeout } => pairing::run(
+            &to,
+            code.as_deref(),
+            Duration::from_secs_f64(timeout),
+            relay,
+        )?,
         Command::Cast(options) => session::cast(*options, relay)?,
         Command::Control {
             to,

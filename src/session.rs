@@ -11,6 +11,7 @@ use crate::cli::{CastOptions, EncoderChoice, Key};
 use crate::discovery::{self, Endpoint};
 use crate::error::{Error, Result};
 use crate::fail;
+use crate::hls::{self, Hls};
 use crate::media::{self, Encoder, Mode, Target};
 use crate::network;
 use crate::relay;
@@ -91,6 +92,10 @@ struct Cast {
     converted: bool,
     /// Where the converted stream being played starts in the film.
     offset: f64,
+    /// The HLS conversion, for screens that take one.
+    hls: Option<Hls>,
+    /// Counts restarts of the HLS conversion: each gets its own playlist address.
+    generation: u32,
 }
 
 impl Cast {
@@ -100,6 +105,14 @@ impl Cast {
 
     fn media(&self, start: f64) -> Media {
         let (url, mime) = match (self.converted, self.converted_mime) {
+            (true, Some(_)) if self.hls.is_some() => (
+                format!(
+                    "{}?v={}",
+                    self.url(&format!("hls/{}", media::PLAYLIST)),
+                    self.generation
+                ),
+                media::HLS_MIME.to_string(),
+            ),
             (true, Some((mime, extension))) => (
                 format!(
                     "{}?start={start:.3}",
@@ -133,6 +146,12 @@ impl Cast {
     }
 
     fn load(&mut self, start: f64) -> Result<()> {
+        if self.converted {
+            if let Some(hls) = &mut self.hls {
+                hls.start(start)?;
+                self.generation += 1;
+            }
+        }
         let media = self.media(start);
         self.renderer.load(&media)?;
         self.offset = if self.converted { start } else { 0.0 };
@@ -172,6 +191,7 @@ pub fn cast(options: CastOptions, relay: Option<&str>) -> Result<()> {
     let target = match device.endpoint {
         Endpoint::Chromecast { .. } => Target::Chromecast,
         Endpoint::Dlna { .. } => Target::Dlna,
+        Endpoint::AirPlay { .. } => Target::AirPlay,
     };
 
     let extension = file
@@ -205,6 +225,19 @@ pub fn cast(options: CastOptions, relay: Option<&str>) -> Result<()> {
             encoder,
         }
     });
+    // Apple's player takes a conversion as an HLS stream, kept in a folder while it is watched.
+    let hls = match (&conversion, target) {
+        (Some(conversion), Target::AirPlay) => Some(Hls::new(
+            &hls::work_dir(&|name| std::env::var(name).ok()),
+            &server::random_token(),
+            &file,
+            conversion.probe.clone(),
+            conversion.convert.clone(),
+            conversion.encoder,
+            options.verbose,
+        )?),
+        _ => None,
+    };
     let converted_mime = conversion
         .as_ref()
         .map(|conversion| (conversion.convert.mime(), conversion.convert.extension()));
@@ -229,6 +262,7 @@ pub fn cast(options: CastOptions, relay: Option<&str>) -> Result<()> {
             conversion,
             vtt: subtitles.vtt.clone(),
             srt: subtitles.srt.clone(),
+            hls: hls.as_ref().map(|hls| hls.folder().to_path_buf()),
             verbose: options.verbose,
         },
     )?;
@@ -257,6 +291,8 @@ pub fn cast(options: CastOptions, relay: Option<&str>) -> Result<()> {
             .filter(|duration| *duration > 0.0),
         converted,
         offset: 0.0,
+        hls,
+        generation: 0,
     };
     println!(
         "Casting \"{}\" to {} ({}, {how})",
@@ -396,6 +432,9 @@ fn follow(cast: &mut Cast, plain: bool) -> Result<()> {
                 return Err(fail!("the device did not start playing"));
             }
             _ => {}
+        }
+        if let (true, Some(hls)) = (cast.converted, &cast.hls) {
+            hls.trim(last.position);
         }
         let line = progress_line(
             last.state,
