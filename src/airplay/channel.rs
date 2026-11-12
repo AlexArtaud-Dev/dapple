@@ -125,10 +125,7 @@ impl Cipher {
     /// Opens every complete frame at the front of `raw`, leaving the rest for later.
     pub fn open(&mut self, raw: &mut Vec<u8>) -> Result<Vec<u8>> {
         let mut plain = Vec::new();
-        loop {
-            let Some(length) = raw.get(..2) else {
-                break;
-            };
+        while let Some(length) = raw.get(..2) {
             let length_bytes = [length[0], length[1]];
             let total = 2 + usize::from(u16::from_le_bytes(length_bytes)) + crypto::TAG;
             if raw.len() < total {
