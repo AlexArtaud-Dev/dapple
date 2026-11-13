@@ -323,7 +323,7 @@ pub fn cast(options: CastOptions, relay: Option<&str>) -> Result<()> {
 /// The address the screen must use to reach this machine. In a container the machine's own
 /// address is one no screen can reach: a relay on the host knows the right one.
 fn reachable_address(device: IpAddr, relay_address: Option<&str>) -> Result<String> {
-    if let Some(relay_address) = relay::locate(relay_address) {
+    for relay_address in relay::locate(relay_address) {
         if let Ok(address) = relay::host_address(&relay_address, device, Duration::from_secs(5)) {
             return Ok(address);
         }

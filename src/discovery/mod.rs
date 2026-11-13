@@ -288,8 +288,8 @@ pub fn pick<'a>(devices: &'a [Device], query: &str) -> Result<&'a Device> {
 /// The screens this program can learn of: those it sees itself, else those a relay sees.
 ///
 /// A relay given with `--relay` is asked directly. Without one, a program running in a container
-/// that sees nothing tries a relay on its gateway, which is the machine hosting it: containers
-/// on a bridge network receive no multicast, so this is how they find screens.
+/// that sees nothing tries a relay on the machine hosting it (its gateway, then Docker Desktop's
+/// host): containers on a bridge network receive no multicast, so this is how they find screens.
 pub fn find(wait: Duration, relay_address: Option<&str>) -> Result<Vec<Device>> {
     if let Some(address) = relay_address {
         return relay::ask(address, wait);
@@ -298,10 +298,12 @@ pub fn find(wait: Duration, relay_address: Option<&str>) -> Result<Vec<Device>> 
     if !devices.is_empty() {
         return Ok(devices);
     }
-    match relay::locate(None) {
-        Some(gateway) => Ok(relay::ask(&gateway, wait).unwrap_or(devices)),
-        None => Ok(devices),
+    for host in relay::locate(None) {
+        if let Ok(found) = relay::ask(&host, wait) {
+            return Ok(found);
+        }
     }
+    Ok(devices)
 }
 
 /// Finds the device named by `--to`.
