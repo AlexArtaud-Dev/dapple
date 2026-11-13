@@ -52,7 +52,7 @@ fn run(parsed: Parsed) -> Result<()> {
             let devices = discovery::find(Duration::from_secs_f64(timeout), relay)?;
             match format {
                 Format::Json => println!("{}", relay::to_json(&devices)),
-                Format::Choices => print!("{}", devices_choices(&devices)),
+                Format::Choices => print!("{}", devices_choices(&devices, is_paired)),
                 Format::Table if devices.is_empty() => {
                     println!("No screen found. Is this machine on the same network as the TV?")
                 }
@@ -103,19 +103,33 @@ fn run(parsed: Parsed) -> Result<()> {
     Ok(())
 }
 
-/// One `locator<TAB>label` line per screen: what a program needs to offer a choice.
-fn devices_choices(devices: &[Device]) -> String {
+/// Whether this machine holds a pairing for the device (only AirPlay screens ask for one).
+fn is_paired(device: &Device) -> bool {
+    let names = renderer::pairing_names(device);
+    airplay::store::load(&[names[0].as_str(), names[1].as_str()]).is_some()
+}
+
+/// One `locator<TAB>name<TAB>key=value;key=value` line per screen: what a program needs to offer
+/// a choice and to say what each screen is (`type`, `model`, `pairing=needed`).
+fn devices_choices(devices: &[Device], paired: impl Fn(&Device) -> bool) -> String {
+    // A tab, a line break or a separator in a value would break the line format.
+    let clean = |text: &str| text.replace(['\t', '\n', '\r'], " ").replace(';', ",");
     devices
         .iter()
         .map(|device| {
-            let detail = if device.model.is_empty() {
-                device.kind().to_string()
-            } else {
-                format!("{}, {}", device.kind(), device.model)
-            };
-            // A tab or a line break in a name would break the line format.
-            let name = device.name.replace(['\t', '\n', '\r'], " ");
-            format!("{}\t{name} ({detail})\n", device.locator)
+            let mut attributes = vec![format!("type={}", device.kind())];
+            if !device.model.trim().is_empty() {
+                attributes.push(format!("model={}", clean(device.model.trim())));
+            }
+            if matches!(device.endpoint, discovery::Endpoint::AirPlay { .. }) && !paired(device) {
+                attributes.push("pairing=needed".to_string());
+            }
+            format!(
+                "{}\t{}\t{}\n",
+                device.locator,
+                clean(&device.name),
+                attributes.join(";")
+            )
         })
         .collect()
 }
@@ -155,4 +169,38 @@ fn devices_table(devices: &[Device]) -> String {
         line([&row[0], &row[1], &row[2], &row[3], &row[4]]);
     }
     table
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(name: &str, model: &str, locator: &str) -> Device {
+        let found = discovery::from_locator(locator).unwrap().unwrap();
+        Device {
+            name: name.to_string(),
+            model: model.to_string(),
+            ..found
+        }
+    }
+
+    #[test]
+    fn lists_choices_with_what_each_screen_is() {
+        let devices = [
+            device(
+                "Living\troom",
+                "Chromecast; Ultra",
+                "chromecast://192.168.1.42:8009",
+            ),
+            device("Home Cinema", "AppleTV14,1", "airplay://192.168.1.114:7000"),
+            device("Paired", "", "airplay://192.168.1.115:7000"),
+        ];
+        let text = devices_choices(&devices, |device| device.name == "Paired");
+        assert_eq!(
+            text,
+            "chromecast://192.168.1.42:8009\tLiving room\ttype=chromecast;model=Chromecast, Ultra\n\
+             airplay://192.168.1.114:7000\tHome Cinema\ttype=airplay;model=AppleTV14,1;pairing=needed\n\
+             airplay://192.168.1.115:7000\tPaired\ttype=airplay\n"
+        );
+    }
 }

@@ -165,15 +165,21 @@ and `stop` drive a screen from another process.
 dapple is also a plugin for [Canopy](https://github.com/AlexArtaud-Dev/Canopy), a self-hosted
 file manager; it does not depend on Canopy in any way. Every release carries
 `canopy-plugin.yaml`: add `AlexArtaud-Dev/dapple` under **Administration → Plugins → Sources**,
-install it. Right-click a video, **Plugins › Cast to a screen › Cast a video**: the form opens
-with the file filled in. The Commands page also offers *Find screens*, *Pause*, *Resume*,
-*Jump*, *Volume* and *Stop*. A cast is a Canopy operation: its progress is live, and
-cancelling it stops the film. Needs Canopy 2026.11.7 or later.
+install it. Needs Canopy 2026.11.11 or later.
 
-Save your screens once, on the plugin's card (**Saved values**): pick the field *Screen*, name
-it ("Living room TV") and give its locator. Do the same for *Address the screen uses to reach
-Canopy* and *Media server port*: every form then starts filled in, and screens are picked by
-name.
+- Right-click a video, **Plugins › Cast to a screen › Cast a video**: the form asks for the
+  screen only, the file being filled in; subtitles, start, audio track, conversion, volume,
+  address and port wait under **More options**. A cast is a Canopy operation: its progress is
+  live, and cancelling it stops the film.
+- Canopy keeps the screens dapple finds (**Administration › Devices**): forms offer them by
+  name, switched-on ones first, and search again by themselves. Rename them, hide those nobody
+  should pick, or add one by its locator when search cannot see it.
+- An Apple TV that asks for a pairing shows a **Pair** button wherever it is picked: the code
+  shown on the TV is typed in the same window.
+- The Commands page also offers *Find screens*, *Pause*, *Resume*, *Jump*, *Volume* and *Stop*.
+
+Values the forms should start with (a relay address, the address and port the screen uses to
+reach Canopy) are saved once on the plugin's card, under **Saved values**.
 
 Casting needs network paths that Canopy's default compose file closes on purpose:
 
