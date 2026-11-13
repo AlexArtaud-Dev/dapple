@@ -8,8 +8,9 @@ description:
   es: Reproduce un vídeo en un televisor o pantalla de la red (Chromecast, Google TV, Apple TV, televisores DLNA) y controla la reproducción.
 version: 0.0.0
 binary: dapple
-# Plugins get a data folder (pairings, conversions) from this Canopy version.
-minCanopy: 2026.11.10
+# Kept screens, guided pairing and short forms (devices, advanced, help, secondary) from this
+# Canopy version.
+minCanopy: 2026.11.11
 source:
   repo: AlexArtaud-Dev/dapple
   checksums: SHA256SUMS
