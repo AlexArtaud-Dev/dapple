@@ -107,7 +107,13 @@ jobs:
         id: tags
         run: |
           image="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          echo "list=$image:${GITHUB_REF_NAME#v},$image:latest" >> "$GITHUB_OUTPUT"
+          # Only a release tag names a version; other builds (branches, pull requests, whose ref
+          # is "5/merge") are tagged for the build alone and never pushed.
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "list=$image:${GITHUB_REF_NAME#v},$image:latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "list=$image:ci" >> "$GITHUB_OUTPUT"
+          fi
       # Built on every push so that a broken image is seen before a release; pushed on tags.
       - uses: docker/build-push-action@v6
         env:
