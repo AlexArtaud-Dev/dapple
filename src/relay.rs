@@ -4,7 +4,7 @@
 //! It answers one question, `GET /devices`, and nothing else: it plays nothing and reads no file.
 
 use std::io::Write;
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -56,13 +56,25 @@ pub fn devices_url(relay: &str) -> String {
     format!("{}/devices", base_url(relay))
 }
 
-/// The relay to ask: the one given with `--relay`, else, for a program running in a container,
-/// one on its gateway, which is the machine hosting it.
-pub fn locate(given: Option<&str>) -> Option<String> {
+/// The name Docker Desktop gives the machine hosting its containers.
+pub const DOCKER_HOST: &str = "host.docker.internal";
+
+/// The relays to ask, in order: the one given with `--relay`; else, for a program running in a
+/// container, one on its gateway (the machine hosting it on Linux), then one on Docker Desktop's
+/// host, whose gateway is a virtual machine.
+pub fn locate(given: Option<&str>) -> Vec<String> {
+    candidates(given, network::in_container(), network::default_gateway())
+}
+
+fn candidates(given: Option<&str>, in_container: bool, gateway: Option<Ipv4Addr>) -> Vec<String> {
     match given {
-        Some(relay) => Some(relay.to_string()),
-        None if network::in_container() => network::default_gateway().map(|ip| ip.to_string()),
-        None => None,
+        Some(relay) => vec![relay.to_string()],
+        None if in_container => gateway
+            .map(|ip| ip.to_string())
+            .into_iter()
+            .chain([DOCKER_HOST.to_string()])
+            .collect(),
+        None => Vec::new(),
     }
 }
 
@@ -170,9 +182,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn asks_the_given_relay_else_the_hosts_of_a_container() {
+        let gateway = Some(Ipv4Addr::new(172, 31, 250, 1));
+        assert_eq!(candidates(Some("10.0.0.2"), true, gateway), ["10.0.0.2"]);
+        assert_eq!(
+            candidates(None, true, gateway),
+            ["172.31.250.1", DOCKER_HOST]
+        );
+        assert_eq!(candidates(None, true, None), [DOCKER_HOST]);
+        assert!(candidates(None, false, gateway).is_empty());
+    }
+
+    #[test]
     fn finds_the_devices_url() {
         assert_eq!(base_url("host:9000/devices"), "http://host:9000");
-        assert_eq!(locate(Some("relay.lan")).as_deref(), Some("relay.lan"));
+        assert_eq!(locate(Some("relay.lan")), ["relay.lan"]);
         assert_eq!(
             devices_url("172.31.250.1"),
             "http://172.31.250.1:8691/devices"
