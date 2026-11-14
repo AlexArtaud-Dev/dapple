@@ -13,6 +13,7 @@ mod media;
 mod network;
 mod pairing;
 mod relay;
+mod remote;
 mod renderer;
 mod server;
 mod session;
@@ -78,6 +79,21 @@ fn run(parsed: Parsed) -> Result<()> {
             timeout,
         } => {
             let device = discovery::resolve(&to, Duration::from_secs_f64(timeout), relay)?;
+            // A cast running for this screen takes the order: a second session would cut it.
+            let casts = remote::dir();
+            if let Action::Status = action {
+                if let Some(state) = remote::live(&casts, device.ip) {
+                    println!("{}", remote::describe(&state));
+                    return Ok(());
+                }
+            } else if remote::send(
+                &casts,
+                device.ip,
+                &action_order(&action),
+                Duration::from_secs(5),
+            )? {
+                return Ok(());
+            }
             let mut renderer = renderer::connect(&device)?;
             match action {
                 Action::Pause => renderer.pause()?,
@@ -101,6 +117,18 @@ fn run(parsed: Parsed) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// An order for a running cast, as it reads typed keys.
+fn action_order(action: &Action) -> String {
+    match action {
+        Action::Pause => "pause".to_string(),
+        Action::Resume => "play".to_string(),
+        Action::Stop => "stop".to_string(),
+        Action::Seek(seconds) => timecode::format(*seconds),
+        Action::Volume(percent) => format!("vol {percent}"),
+        Action::Status => String::new(),
+    }
 }
 
 /// Whether this machine holds a pairing for the device (only AirPlay screens ask for one).

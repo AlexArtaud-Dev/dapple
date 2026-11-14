@@ -8,9 +8,8 @@ description:
   es: Reproduce un vídeo en un televisor o pantalla de la red (Chromecast, Google TV, Apple TV, televisores DLNA) y controla la reproducción.
 version: 0.0.0
 binary: dapple
-# Kept screens, guided pairing and short forms (devices, advanced, help, secondary) from this
-# Canopy version.
-minCanopy: 2026.11.11
+# Remote controls (devices.controls, progress detail) from this Canopy version.
+minCanopy: 2026.11.15
 source:
   repo: AlexArtaud-Dev/dapple
   checksums: SHA256SUMS
@@ -24,6 +23,8 @@ devices:
     name: { en: Screens, fr: Écrans, es: Pantallas }
     detect: dapple.devices
     pair: { start: dapple.pair, code: dapple.pair-code }
+    # Canopy's remote drives a cast through these; they reach the running cast (one session).
+    controls: { pause: dapple.pause, resume: dapple.resume, seek: dapple.seek, volume: dapple.volume, stop: dapple.stop }
 commands:
   - id: dapple.devices
     name: { en: Find screens, fr: Chercher les écrans, es: Buscar pantallas }
@@ -167,10 +168,13 @@ commands:
         label: { en: Media server port, fr: Port du serveur de médias, es: Puerto del servidor de medios }
     args: ['cast', '{flags}', '--plain', '--to', '{device}', '--', '{file}']
     progressParser: percent-regex
-    progressPattern: '^(?P<percent>[0-9]{1,3})% '
+    # The detail (position, state, volume) feeds Canopy's remote.
+    progressPattern: '^(?P<percent>[0-9]{1,3})% (?P<detail>.+)$'
     timeout: 12h
 
   - id: dapple.status
+    # Reached from Canopy's remote.
+    secondary: true
     name: { en: Playback status, fr: État de la lecture, es: Estado de la reproducción }
     description:
       en: Shows what the screen is doing and where it is in the video.
@@ -231,6 +235,8 @@ commands:
     timeout: 1m
 
   - id: dapple.pause
+    # Reached from Canopy's remote.
+    secondary: true
     name: { en: Pause, fr: Mettre en pause, es: Pausar }
     description:
       en: Pauses what the screen is playing.
@@ -244,6 +250,8 @@ commands:
     timeout: 2m
 
   - id: dapple.resume
+    # Reached from Canopy's remote.
+    secondary: true
     name: { en: Resume, fr: Reprendre, es: Reanudar }
     description:
       en: Resumes playback on the screen.
@@ -257,6 +265,8 @@ commands:
     timeout: 2m
 
   - id: dapple.stop
+    # Reached from Canopy's remote.
+    secondary: true
     name: { en: Stop, fr: Arrêter, es: Detener }
     description:
       en: Stops playback on the screen.
@@ -270,6 +280,8 @@ commands:
     timeout: 2m
 
   - id: dapple.seek
+    # Reached from Canopy's remote.
+    secondary: true
     name: { en: Jump to a position, fr: Aller à une position, es: Ir a una posición }
     description:
       en: Jumps to a position of the video being played. A video converted on the fly cannot be jumped in this way.
@@ -289,6 +301,8 @@ commands:
     timeout: 2m
 
   - id: dapple.volume
+    # Reached from Canopy's remote.
+    secondary: true
     name: { en: Set the volume, fr: Régler le volume, es: Ajustar el volumen }
     description:
       en: Sets the volume of the screen.

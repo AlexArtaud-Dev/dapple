@@ -22,7 +22,8 @@ use crate::timecode;
 
 /// A screen that has not started after this long will not.
 const START_LIMIT: Duration = Duration::from_secs(45);
-const PLAIN_EVERY: Duration = Duration::from_secs(5);
+/// Often enough for a remote showing where the film is.
+const PLAIN_EVERY: Duration = Duration::from_secs(2);
 
 enum Input {
     Key(Key),
@@ -80,6 +81,8 @@ pub fn clamp_seek(target: f64, duration: f64) -> f64 {
 
 struct Cast {
     renderer: Box<dyn Renderer>,
+    /// The state other processes read, and the orders they leave.
+    published: crate::remote::Published,
     base: String,
     server: MediaServer,
     title: String,
@@ -274,6 +277,7 @@ pub fn cast(options: CastOptions, relay: Option<&str>) -> Result<()> {
 
     let mut cast = Cast {
         renderer: renderer::connect(&device)?,
+        published: crate::remote::Published::new(crate::remote::dir(), device.ip),
         base: format!("http://{host}:{}", server.port()),
         server,
         title,
@@ -362,6 +366,27 @@ fn inputs() -> mpsc::Receiver<Input> {
     receiver
 }
 
+/// Acts on a key typed in the terminal or an order from another process.
+fn apply_key(cast: &mut Cast, last: &Status, key: Key) -> Result<()> {
+    let position = cast.position(last);
+    let duration = cast.duration(last);
+    match key {
+        Key::Toggle if last.state == State::Paused => cast.renderer.play(),
+        Key::Toggle | Key::Pause => cast.renderer.pause(),
+        Key::Resume => cast.renderer.play(),
+        Key::SeekBy(delta) => cast.seek(clamp_seek(position + delta, duration)),
+        Key::SeekTo(target) => cast.seek(clamp_seek(target, duration)),
+        Key::VolumeBy(delta) => match last.volume {
+            Some(volume) => cast
+                .renderer
+                .set_volume((i16::from(volume) + delta).clamp(0, 100) as u8),
+            None => Err(fail!("this device does not tell its volume")),
+        },
+        Key::VolumeTo(level) => cast.renderer.set_volume(level),
+        Key::Quit => Ok(()),
+    }
+}
+
 fn follow(cast: &mut Cast, plain: bool) -> Result<()> {
     let receiver = inputs();
     let begun = Instant::now();
@@ -378,34 +403,29 @@ fn follow(cast: &mut Cast, plain: bool) -> Result<()> {
         println!("p pause/resume · f/b ±30 s · +/- volume · <time> jump · q stop   (then Enter)");
     }
     loop {
-        match receiver.recv_timeout(Duration::from_secs(1)) {
-            Ok(Input::Interrupt) | Ok(Input::Key(Key::Quit)) => {
+        let typed = match receiver.recv_timeout(Duration::from_secs(1)) {
+            Ok(Input::Interrupt) => Some(Key::Quit),
+            Ok(Input::Key(key)) => Some(key),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => {
+                thread::sleep(Duration::from_secs(1));
+                None
+            }
+        };
+        // Keys typed here, then orders another process left (`dapple pause --to …`).
+        let ordered = cast
+            .published
+            .take_order()
+            .and_then(|order| crate::cli::parse_key(&order));
+        for key in typed.into_iter().chain(ordered) {
+            if key == Key::Quit {
                 let _ = cast.renderer.stop();
                 println!("\nStopped.");
                 return Ok(());
             }
-            Ok(Input::Key(key)) => {
-                let position = cast.position(&last);
-                let duration = cast.duration(&last);
-                let outcome = match key {
-                    Key::Toggle if last.state == State::Paused => cast.renderer.play(),
-                    Key::Toggle => cast.renderer.pause(),
-                    Key::SeekBy(delta) => cast.seek(clamp_seek(position + delta, duration)),
-                    Key::SeekTo(target) => cast.seek(clamp_seek(target, duration)),
-                    Key::VolumeBy(delta) => match last.volume {
-                        Some(volume) => cast
-                            .renderer
-                            .set_volume((i16::from(volume) + delta).clamp(0, 100) as u8),
-                        None => Err(fail!("this device does not tell its volume")),
-                    },
-                    Key::Quit => Ok(()),
-                };
-                if let Err(error) = outcome {
-                    eprintln!("\n{error}");
-                }
+            if let Err(error) = apply_key(cast, &last, key) {
+                eprintln!("\n{error}");
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => thread::sleep(Duration::from_secs(1)),
         }
 
         last = match cast.renderer.status() {
@@ -436,6 +456,12 @@ fn follow(cast: &mut Cast, plain: bool) -> Result<()> {
         if let (true, Some(hls)) = (cast.converted, &cast.hls) {
             hls.trim(last.position);
         }
+        cast.published.update(
+            last.state,
+            cast.position(&last),
+            cast.duration(&last),
+            last.volume,
+        );
         let line = progress_line(
             last.state,
             cast.position(&last),

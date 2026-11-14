@@ -50,8 +50,8 @@ What it does and does not do:
 - Apple's player reads MP4 and QuickTime files as stored. Anything else (MKV…) is repackaged
   as an HLS stream, without re-encoding H.264, HEVC, AAC, AC-3 and E-AC-3; it is kept in a
   temporary folder while watched, and what was watched two minutes ago is deleted.
-- The volume stays on the TV's remote. `pause`, `seek` and `stop` from another process are
-  not available yet: AirPlay keeps one session per sender.
+- The volume stays on the TV's remote. `pause`, `resume`, `seek` and `stop` from another
+  process go through the running cast (see below): AirPlay keeps one session per sender.
 
 ## Install
 
@@ -160,12 +160,17 @@ Everything is scriptable: `dapple devices --json` lists screens with their locat
 success, 1 on failure, 2 on a usage error, and `status`, `pause`, `resume`, `seek`, `volume`
 and `stop` drive a screen from another process.
 
+When a `dapple cast` runs for that screen, those commands go through it rather than open a
+second session: the cast publishes its state each second and takes orders from a small file in
+dapple's data folder (`casts/<address>.json` and `.order`). So they work with an Apple TV, and
+`seek` jumps inside a converted stream too. `--plain` lines come every 2 seconds.
+
 ## As a Canopy plugin
 
 dapple is also a plugin for [Canopy](https://github.com/AlexArtaud-Dev/Canopy), a self-hosted
 file manager; it does not depend on Canopy in any way. Every release carries
 `canopy-plugin.yaml`: add `AlexArtaud-Dev/dapple` under **Administration → Plugins → Sources**,
-install it. Needs Canopy 2026.11.11 or later.
+install it.
 
 - Right-click a video, **Plugins › Cast to a screen › Cast a video**: the form asks for the
   screen only, the file being filled in; subtitles, start, audio track, conversion, volume,
@@ -176,7 +181,9 @@ install it. Needs Canopy 2026.11.11 or later.
   should pick, or add one by its locator when search cannot see it.
 - An Apple TV that asks for a pairing shows a **Pair** button wherever it is picked: the code
   shown on the TV is typed in the same window.
-- The Commands page also offers *Find screens*, *Pause*, *Resume*, *Jump*, *Volume* and *Stop*.
+- While a film plays, **Casting** shows in Canopy's header: a remote with pause, a position
+  bar, 30 s jumps, volume and stop, for every kind of screen, Apple TV included. Needs Canopy
+  2026.11.15 or later.
 
 Values the forms should start with (a relay address, the address and port the screen uses to
 reach Canopy) are saved once on the plugin's card, under **Saved values**.
@@ -197,13 +204,11 @@ Casting needs network paths that Canopy's default compose file closes on purpose
   output of `-v` when a screen misbehaves.
 - Subtitles are external files only (no extraction from MKV yet, no burn-in).
 - IPv4 only.
-- `seek` from another process cannot jump inside a converted stream; use the keys of the
-  casting process.
 
 ## Roadmap
 
 - Roku and Fire TV
-- AirPlay: volume, and control from another process
+- AirPlay volume
 - Embedded subtitles and audio track listing
 - VAAPI and Quick Sync encoders
 

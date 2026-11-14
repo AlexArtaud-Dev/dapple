@@ -381,22 +381,35 @@ fn parse_command(
 #[derive(Debug, PartialEq)]
 pub enum Key {
     Toggle,
+    Pause,
+    Resume,
     Quit,
     SeekBy(f64),
     SeekTo(f64),
     VolumeBy(i16),
+    VolumeTo(u8),
 }
 
 /// Reads a line typed during playback.
 pub fn parse_key(line: &str) -> Option<Key> {
     match line.trim() {
-        "" | "p" | "pause" | "play" => Some(Key::Toggle),
+        "" | "p" => Some(Key::Toggle),
+        "pause" => Some(Key::Pause),
+        "play" | "resume" => Some(Key::Resume),
         "q" | "s" | "quit" | "stop" => Some(Key::Quit),
         "f" => Some(Key::SeekBy(30.0)),
         "b" => Some(Key::SeekBy(-30.0)),
         "+" => Some(Key::VolumeBy(5)),
         "-" => Some(Key::VolumeBy(-5)),
-        other => timecode::parse(other).map(Key::SeekTo),
+        other => match other.split_once(' ') {
+            Some(("vol" | "volume", level)) => level
+                .trim()
+                .parse::<u8>()
+                .ok()
+                .filter(|level| *level <= 100)
+                .map(Key::VolumeTo),
+            _ => timecode::parse(other).map(Key::SeekTo),
+        },
     }
 }
 
@@ -596,5 +609,11 @@ mod tests {
         assert_eq!(parse_key("-"), Some(Key::VolumeBy(-5)));
         assert_eq!(parse_key("1:00:00"), Some(Key::SeekTo(3600.0)));
         assert_eq!(parse_key("what"), None);
+        assert_eq!(parse_key("pause"), Some(Key::Pause));
+        assert_eq!(parse_key("play"), Some(Key::Resume));
+        assert_eq!(parse_key("vol 40"), Some(Key::VolumeTo(40)));
+        assert_eq!(parse_key("volume 100"), Some(Key::VolumeTo(100)));
+        assert_eq!(parse_key("vol 101"), None);
+        assert_eq!(parse_key("vol x"), None);
     }
 }
